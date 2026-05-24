@@ -282,7 +282,7 @@ fn propagate_layers_recursive(
     commands: &mut Commands,
 ) {
     if layer_query.get(entity).is_err() {
-        commands.entity(entity).insert(layer.clone());
+        commands.entity(entity).try_insert(layer.clone());
     }
 
     if let Ok(children) = children_query.get(entity) {

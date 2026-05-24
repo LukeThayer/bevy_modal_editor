@@ -84,7 +84,12 @@ impl Command for SpawnPrefabCommand {
         // Collect the new entities that were created
         let new_entities: Vec<Entity> = entity_map.values().copied().collect();
 
-        // Tag all new entities with PrefabInstance
+        // Tag all new entities with PrefabInstance (filter out any that were despawned
+        // during scene deserialization, e.g. temporary entities)
+        let new_entities: Vec<Entity> = new_entities
+            .into_iter()
+            .filter(|&e| world.get_entity(e).is_ok())
+            .collect();
         for &entity in &new_entities {
             world.entity_mut(entity).insert(PrefabInstance {
                 prefab_name: self.prefab_name.clone(),
@@ -96,8 +101,10 @@ impl Command for SpawnPrefabCommand {
         let root_entities: Vec<Entity> = new_entities
             .iter()
             .filter(|&&entity| {
-                let parent = world.entity(entity).get::<ChildOf>();
-                match parent {
+                let Ok(entity_ref) = world.get_entity(entity) else {
+                    return false;
+                };
+                match entity_ref.get::<ChildOf>() {
                     Some(child_of) => !new_entities.contains(&child_of.parent()),
                     None => true,
                 }
