@@ -8,7 +8,15 @@ use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::remote::{RemotePlugin, http::RemoteHttpPlugin};
 use bevy_egui::EguiPlugin;
 use bevy_channel_mat::ChannelThresholdPlugin;
-use bevy_gaussian_splatting::GaussianSplattingPlugin;
+use bevy_gaussian_splatting::{
+    Gaussian3d, Gaussian4d, PlanarStoragePlugin, SphericalHarmonicCoefficients,
+    camera::GaussianCameraPlugin,
+    gaussian::{cloud::CloudPlugin, settings::SettingsPlugin},
+    io::loader::{Gaussian3dLoader, Gaussian4dLoader},
+    material::MaterialPlugin as GaussianMaterialPlugin,
+    query::QueryPlugin as GaussianQueryPlugin,
+    render::RenderPipelinePlugin,
+};
 use bevy_grid_shader::GridMaterialPlugin;
 use bevy_outliner::prelude::*;
 use bevy_procedural::ProceduralPlugin;
@@ -212,7 +220,23 @@ impl Plugin for EditorPlugin {
             .add_plugins(OutlinePlugin)
             .add_plugins(GridMaterialPlugin)
             .add_plugins(ChannelThresholdPlugin)
-            .add_plugins(GaussianSplattingPlugin)
+            // Gaussian splatting sub-plugins (excluding GaussianScenePlugin which
+            // registers a .gltf/.glb loader that errors on non-gaussian GLBs)
+            .register_type::<SphericalHarmonicCoefficients>()
+            .add_plugins((
+                GaussianCameraPlugin,
+                SettingsPlugin,
+                CloudPlugin::<Gaussian3d>::default(),
+                CloudPlugin::<Gaussian4d>::default(),
+                PlanarStoragePlugin::<Gaussian3d>::default(),
+                PlanarStoragePlugin::<Gaussian4d>::default(),
+                RenderPipelinePlugin::<Gaussian3d>::default(),
+                RenderPipelinePlugin::<Gaussian4d>::default(),
+                GaussianMaterialPlugin,
+                GaussianQueryPlugin,
+            ))
+            .init_asset_loader::<Gaussian3dLoader>()
+            .init_asset_loader::<Gaussian4dLoader>()
             .add_plugins(WireframePlugin::default())
             // Material system
             .add_plugins(MaterialsPlugin)
