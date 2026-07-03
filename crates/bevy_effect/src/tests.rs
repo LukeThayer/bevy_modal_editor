@@ -1,29 +1,30 @@
-//! Characterization tests for the effect runtime (`src/effects/mod.rs` +
-//! `data.rs`).
+//! Characterization tests for the effect runtime (`runtime.rs` + `data.rs`).
 //!
-//! These pin TODAY's observable behavior of `advance_effects` /
-//! `advance_tweens` ahead of the Task 3 extraction into `crates/bevy_effect`.
-//! They must pass **unmodified** against the current implementation — this is
-//! characterization, not TDD-red. If a future change makes one of these fail,
-//! that's a signal the runtime's contract shifted, not necessarily a bug.
+//! These pin the observable behavior of `advance_effects` / `advance_tweens`
+//! as captured in Task 2, *before* the extraction of the runtime out of
+//! `bevy_modal_editor` into this crate — they are the extraction's safety net
+//! and moved here with the code. Assertions are unchanged from the pre-move
+//! suite; only import paths differ. If a future change makes one of these
+//! fail, that's a signal the runtime's contract shifted, not necessarily a
+//! bug.
 //!
-//! Lives inline (rather than under a workspace `tests/` dir) because
-//! `advance_effects`, `advance_tweens`, `execute_action`, etc. are private to
-//! this module — the suite needs that access to drive the runtime directly
-//! without going through the full `EffectPlugin` (which also wires up
-//! `init_effect_library`/`auto_save_effect_presets`, and the latter writes
-//! `.fx.ron` files to `assets/effects/` on disk as a side effect of the
-//! library resource merely existing — not something a test suite should
-//! trigger). See `tests/effect_marker_scene_fixture.rs` for the
-//! scene-serialization fixture, which only needs public API and so lives as
-//! a normal integration test.
+//! Lives inline (rather than under a `tests/` dir) because `advance_effects`
+//! and `advance_tweens` are `pub(crate)` — the suite drives the runtime
+//! directly without going through the full `EffectPlugin`. The editor's
+//! `tests/effect_marker_scene_fixture.rs` (which pins the reflected scene
+//! type path) stays editor-side, where `build_editor_scene` lives.
+//!
+//! The `spawn_effect_recursion_stops_at_depth_cap` test at the bottom is NOT
+//! part of the characterization contract — it covers the depth guard added
+//! during the extraction.
 
 use super::*;
-use crate::scene::PrimitiveShape;
+use crate::runtime::{advance_effects, advance_tweens, MAX_SPAWN_EFFECT_DEPTH};
+use bevy::prelude::*;
 use bevy::app::TaskPoolPlugin;
 use bevy::asset::{AssetApp, AssetPlugin};
 use bevy::time::{TimePlugin, TimeUpdateStrategy};
-use bevy_vfx::VfxSystem;
+use bevy_vfx::{VfxLibrary, VfxSystem};
 use std::time::Duration;
 
 /// Fixed per-frame delta used by all tests (10 fps keeps the arithmetic
@@ -516,4 +517,62 @@ fn tween_value_scale_interpolates_linearly_then_completes() {
     assert_eq!(playback(&app, entity).active_tweens.len(), 0, "completed tween should be removed");
     let final_scale = app.world().get::<Transform>(child).unwrap().scale;
     assert_eq!(final_scale, Vec3::splat(2.0));
+}
+
+// ---------------------------------------------------------------------------
+// Extraction-added coverage (NOT characterization)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn spawn_effect_recursion_stops_at_depth_cap() {
+    // NOT part of the Task-2 characterization contract: the depth guard was
+    // added when the runtime moved into `bevy_effect`. A preset that spawns
+    // itself used to grow unboundedly (one level per frame); now the chain is
+    // cut after `MAX_SPAWN_EFFECT_DEPTH` hops, dropping the spawn with a
+    // `warn!`.
+    let mut app = test_app();
+    app.world_mut().resource_mut::<EffectLibrary>().effects.insert(
+        "Ouroboros".into(),
+        EffectMarker {
+            steps: vec![EffectStep {
+                name: "spawn-self".into(),
+                trigger: EffectTrigger::OnSpawn,
+                actions: vec![EffectAction::SpawnEffect {
+                    tag: "self".into(),
+                    preset: "Ouroboros".into(),
+                    at: SpawnLocation::Offset(Vec3::ZERO),
+                    inherit_velocity: false,
+                }],
+            }],
+        },
+    );
+
+    let marker = app
+        .world()
+        .resource::<EffectLibrary>()
+        .effects
+        .get("Ouroboros")
+        .unwrap()
+        .clone();
+    spawn_effect(&mut app, marker.steps);
+
+    let count_effects = |app: &mut App| {
+        let mut q = app.world_mut().query::<&EffectMarker>();
+        q.iter(app.world()).count()
+    };
+
+    // Each nesting level needs a frame for its own OnSpawn to fire; give the
+    // chain far more frames than the cap so unbounded growth would be obvious.
+    tick(&mut app, 30);
+    let expected = 1 + MAX_SPAWN_EFFECT_DEPTH as usize; // root (depth 0) + capped chain
+    assert_eq!(
+        count_effects(&mut app),
+        expected,
+        "self-spawning preset must stop after {MAX_SPAWN_EFFECT_DEPTH} hops"
+    );
+
+    // And it must stay stopped — the deepest playback keeps its OnSpawn from
+    // re-firing, so no further entities appear.
+    tick(&mut app, 10);
+    assert_eq!(count_effects(&mut app), expected);
 }

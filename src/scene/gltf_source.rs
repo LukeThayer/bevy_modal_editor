@@ -1,21 +1,20 @@
+//! Editor shell around `bevy_effect`'s GLTF-source support.
+//!
+//! The [`GltfSource`] component and its materializing systems (scene load on
+//! add/change, cleanup on removal) moved into `crates/bevy_effect` because the
+//! effect runtime's `SpawnGltf` action depends on them. They are re-exported
+//! here under their old paths; the reflected type path is pinned inside
+//! `bevy_effect` via `#[type_path]`, so saved scenes are unaffected.
+//!
+//! The editor-only piece — spawning a `SceneEntity`-tracked GLTF object via
+//! [`SpawnGltfEvent`] — stays here.
+
 use avian3d::prelude::*;
-use bevy::gltf::GltfAssetLabel;
 use bevy::prelude::*;
-use bevy::scene::SceneRoot;
-use serde::{Deserialize, Serialize};
+
+pub use bevy_effect::{GltfLoaded, GltfSource};
 
 use super::SceneEntity;
-
-/// Component that specifies a GLTF/GLB file to load as children of this entity.
-/// The path is relative to the assets folder.
-#[derive(Component, Reflect, Default, Clone, Serialize, Deserialize)]
-#[reflect(Component, Default)]
-pub struct GltfSource {
-    /// Path to the GLTF/GLB file (relative to assets folder)
-    pub path: String,
-    /// Which scene index to load (defaults to 0)
-    pub scene_index: usize,
-}
 
 /// Event to spawn a GLTF object in the scene
 #[derive(Message)]
@@ -28,24 +27,18 @@ pub struct SpawnGltfEvent {
     pub rotation: Quat,
 }
 
-/// Marker component for the child entity that holds the loaded GLTF scene
-#[derive(Component)]
-pub struct GltfLoaded;
-
-/// Tracks the currently loaded path to detect changes
-#[derive(Component, Default)]
-struct GltfLoadedPath {
-    path: String,
-    scene_index: usize,
-}
-
 pub struct GltfSourcePlugin;
 
 impl Plugin for GltfSourcePlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<GltfSource>()
-            .add_message::<SpawnGltfEvent>()
-            .add_systems(Update, (load_gltf_sources, cleanup_gltf_on_remove, handle_spawn_gltf));
+        // The materializing systems live in bevy_effect now; the effect
+        // plugin may already have installed them (both sides guard).
+        if !app.is_plugin_added::<bevy_effect::GltfSourcePlugin>() {
+            app.add_plugins(bevy_effect::GltfSourcePlugin);
+        }
+
+        app.add_message::<SpawnGltfEvent>()
+            .add_systems(Update, handle_spawn_gltf);
     }
 }
 
@@ -76,87 +69,5 @@ fn handle_spawn_gltf(
         ));
 
         info!("Spawned GLTF object: {}", event.path);
-    }
-}
-
-/// System that loads GLTF scenes when GltfSource is added or changed
-fn load_gltf_sources(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    sources: Query<(Entity, &GltfSource, Option<&GltfLoadedPath>), Changed<GltfSource>>,
-    children_query: Query<&Children>,
-    gltf_loaded_query: Query<Entity, With<GltfLoaded>>,
-) {
-    for (entity, source, loaded_path) in sources.iter() {
-        // Check if the path actually changed
-        if let Some(loaded) = loaded_path {
-            if loaded.path == source.path && loaded.scene_index == source.scene_index {
-                continue;
-            }
-        }
-
-        // Remove any existing loaded GLTF children
-        if let Ok(children) = children_query.get(entity) {
-            for child in children.iter() {
-                if gltf_loaded_query.get(child).is_ok() {
-                    commands.entity(child).despawn();
-                }
-            }
-        }
-
-        // Load new GLTF if path is not empty
-        if !source.path.is_empty() {
-            let path = source.path.clone();
-            let scene_index = source.scene_index;
-            let scene_handle = asset_server.load(
-                GltfAssetLabel::Scene(scene_index).from_asset(path),
-            );
-
-            // Spawn the scene as a child
-            let child = commands
-                .spawn((
-                    GltfLoaded,
-                    SceneRoot(scene_handle),
-                    Transform::default(),
-                ))
-                .id();
-
-            commands.entity(entity).add_child(child);
-
-            // Track what we loaded
-            commands.entity(entity).insert(GltfLoadedPath {
-                path: source.path.clone(),
-                scene_index: source.scene_index,
-            });
-
-            info!("Loading GLTF scene: {} (scene {})", source.path, source.scene_index);
-        } else {
-            // Remove the loaded path tracker if path is empty
-            commands.entity(entity).remove::<GltfLoadedPath>();
-        }
-    }
-}
-
-/// Clean up GLTF children when the GltfSource component is removed
-fn cleanup_gltf_on_remove(
-    mut commands: Commands,
-    mut removed: RemovedComponents<GltfSource>,
-    children_query: Query<&Children>,
-    gltf_loaded_query: Query<Entity, With<GltfLoaded>>,
-) {
-    for entity in removed.read() {
-        // Remove any loaded GLTF children
-        if let Ok(children) = children_query.get(entity) {
-            for child in children.iter() {
-                if gltf_loaded_query.get(child).is_ok() {
-                    commands.entity(child).despawn();
-                }
-            }
-        }
-
-        // Remove the loaded path tracker
-        if let Ok(mut entity_commands) = commands.get_entity(entity) {
-            entity_commands.remove::<GltfLoadedPath>();
-        }
     }
 }

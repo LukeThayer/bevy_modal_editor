@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/bevy_outliner", "crates/bevy_spline_3d", "crates/bevy_grid_shader", "crates/bevy_channel_mat", "crates/bevy_editor_game", "crates/bevy_procedural", "crates/bevy_vfx", "crates/marble_demo", "crates/ai_demo"]
+members = [".", "crates/bevy_outliner", "crates/bevy_spline_3d", "crates/bevy_grid_shader", "crates/bevy_channel_mat", "crates/bevy_editor_game", "crates/bevy_procedural", "crates/bevy_vfx", "crates/bevy_effect", "crates/marble_demo", "crates/ai_demo"]
 # fp_demo depends on bevy_locomotion via an absolute path into /home/zach/…,
 # which breaks manifest loading for the entire workspace on other machines.
 # Excluded until that dependency is made portable (git or relative path).
@@ -25,6 +25,7 @@ bevy_channel_mat = { path = "crates/bevy_channel_mat" }
 bevy_editor_game = { path = "crates/bevy_editor_game" }
 bevy_procedural = { path = "crates/bevy_procedural" }
 bevy_vfx = { path = "crates/bevy_vfx" }
+bevy_effect = { path = "crates/bevy_effect" }
 bevy_rerecast = "0.4"
 avian_rerecast = "0.4"
 bevy_landmass = "0.11"
@@ -61,6 +62,7 @@ bevy_channel_mat.workspace = true
 bevy_editor_game.workspace = true
 bevy_procedural.workspace = true
 bevy_vfx.workspace = true
+bevy_effect.workspace = true
 bevy_rerecast.workspace = true
 avian_rerecast.workspace = true
 bevy_landmass.workspace = true
