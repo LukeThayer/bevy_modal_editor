@@ -82,6 +82,12 @@ obelisk-bevy = { git = "https://github.com/LukeThayer/bevy-obelisk", rev = "ebbe
 # consumes). Pinned to the exact rev obelisk-bevy @ ebbecc2a resolves against (see the
 # `stat_core` entry in Cargo.lock) — bump only in lockstep with the obelisk-bevy rev above.
 stat_core = { git = "ssh://git@github.com/vothuul/obelisk.git", rev = "bf9f026", optional = true }
+# loot_core is a sibling crate in the same repo/rev as stat_core (transitive dep already, per
+# Cargo.lock) — declared directly here (Task 6) so the editor can reach its `EnumVariants` trait
+# (`stat_core` uses it internally for `ApplicationTarget`/`DamageType`/etc. but doesn't
+# re-export it) for the Rules region's dropdown pickers. Same git+rev as stat_core; Cargo dedupes
+# it to the one instance stat_core's own types already implement the trait against.
+loot_core = { git = "ssh://git@github.com/vothuul/obelisk.git", rev = "bf9f026", optional = true }
 # TOML (de)serialization for `config/skills/*.toml` content-root files (stat_core's own
 # `config::parse_skills` takes a `&str`, so the editor does its own file I/O + toml parse).
 toml = { version = "0.8", optional = true }
@@ -94,7 +100,7 @@ bevy = { workspace = true, features = ["dynamic_linking"] }
 default = []
 dynamic = ["bevy/dynamic_linking"]
 # Enables EditorMode::Skill (K key, right panel) and the obelisk-bevy integration.
-obelisk = ["dep:obelisk-bevy", "dep:stat_core", "dep:toml"]
+obelisk = ["dep:obelisk-bevy", "dep:stat_core", "dep:loot_core", "dep:toml"]
 
 [[example]]
 name = "simple"

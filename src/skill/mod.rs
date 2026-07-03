@@ -16,7 +16,10 @@
 //! machinery and the probe; it is registered from `EditorPlugin::build`.
 
 pub mod library;
+pub mod panel;
+pub mod readouts;
 pub mod templates;
+pub mod validation;
 
 pub use library::{
     delete_skill, duplicate_skill, insert_new_skill, rename_skill, scan_and_merge_root,
@@ -24,6 +27,7 @@ pub use library::{
     SkillEntry, SkillLibrary,
 };
 pub use templates::SkillArchetype;
+pub use validation::{validate_skill_stub, ValidationReport};
 
 use bevy::app::AppExit;
 use bevy::prelude::*;
@@ -31,7 +35,7 @@ use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 use bevy_egui::egui;
 
 use crate::editor::{EditorMode, EditorState, PanelSide, PinnedWindows};
-use crate::ui::theme::{colors, draw_pin_button, panel, panel_frame};
+use crate::ui::theme::{colors, draw_pin_button, panel as panel_theme, panel_frame};
 
 pub struct SkillModePlugin;
 
@@ -77,16 +81,16 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
     };
 
     // Calculate panel position (right side)
-    let panel_height = panel::available_height(&ctx);
+    let panel_height = panel_theme::available_height(&ctx);
 
     // If pinned and the active mode also uses the right side, move to the left
     let displaced = is_pinned
         && current_mode != EditorMode::Skill
         && current_mode.panel_side() == Some(PanelSide::Right);
     let (anchor_align, anchor_offset) = if displaced {
-        (egui::Align2::LEFT_TOP, [panel::WINDOW_PADDING, panel::WINDOW_PADDING])
+        (egui::Align2::LEFT_TOP, [panel_theme::WINDOW_PADDING, panel_theme::WINDOW_PADDING])
     } else {
-        (egui::Align2::RIGHT_TOP, [-panel::WINDOW_PADDING, panel::WINDOW_PADDING])
+        (egui::Align2::RIGHT_TOP, [-panel_theme::WINDOW_PADDING, panel_theme::WINDOW_PADDING])
     };
 
     let mut pin_toggled = false;
@@ -95,13 +99,23 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
     let open_skill = library.open.clone();
     let has_content_roots = !library.roots.is_empty();
     let skill_count = library.skills.len();
+    // Clone the open skill's entry out of the library (same idiom `ui::effect_editor.rs` uses
+    // for `EffectMarker`: clone out, edit the clone against `&SkillLibrary` for read-only
+    // pickers/readouts, write the clone back once the window closure — and with it every
+    // borrow of `library` — has ended). Regions mutate `entry` directly and flip the relevant
+    // `dirty_*` flag; Task 8 owns turning that into an actual disk save.
+    let mut editing_entry = open_skill.as_ref().and_then(|id| library.skills.get(id).cloned());
+    let report = open_skill
+        .as_ref()
+        .map(|id| validate_skill_stub(id, library))
+        .unwrap_or_default();
 
     egui::Window::new("Skill")
         .id(egui::Id::new("skill_editor_panel"))
         .frame(panel_frame(&ctx.style()))
         .anchor(anchor_align, anchor_offset)
-        .default_width(panel::DEFAULT_WIDTH)
-        .min_width(panel::MIN_WIDTH)
+        .default_width(panel_theme::DEFAULT_WIDTH)
+        .min_width(panel_theme::MIN_WIDTH)
         .min_height(panel_height)
         .max_height(panel_height)
         .resizable(true)
@@ -140,15 +154,26 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
                         return;
                     }
 
-                    match &open_skill {
-                        Some(id) => {
+                    match (&open_skill, &mut editing_entry) {
+                        (Some(id), Some(entry)) => {
                             ui.label(egui::RichText::new(id).strong().color(colors::ACCENT_PURPLE));
+                            ui.separator();
+
+                            panel::rules::draw_rules_region(ui, entry, library, &report);
+
+                            ui.separator();
                             ui.label(
-                                egui::RichText::new("regions land in Tasks 6-9")
-                                    .color(colors::TEXT_SECONDARY),
+                                egui::RichText::new("Behavior — lands in Task 7")
+                                    .color(colors::TEXT_SECONDARY)
+                                    .small(),
+                            );
+                            ui.label(
+                                egui::RichText::new("Presentation — lands in Task 9")
+                                    .color(colors::TEXT_SECONDARY)
+                                    .small(),
                             );
                         }
-                        None => {
+                        (None, _) | (_, None) => {
                             ui.label(
                                 egui::RichText::new(format!("{skill_count} skill(s) loaded"))
                                     .color(colors::TEXT_SECONDARY),
@@ -163,6 +188,13 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
                 });
         });
 
+    // `library` (and `report`, which borrowed nothing but was built from it) go out of scope
+    // here — the immutable `SkillLibrary` borrow ends at its last use inside the closure above,
+    // so `world` can be mutably borrowed again below.
+    if let (Some(id), Some(entry)) = (open_skill, editing_entry) {
+        world.resource_mut::<SkillLibrary>().skills.insert(id, entry);
+    }
+
     if pin_toggled {
         let mut pinned = world.resource_mut::<PinnedWindows>();
         if !pinned.0.remove(&EditorMode::Skill) {
@@ -174,20 +206,24 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
 /// Frame-scripted probe for headless verification of the Skill panel and palette.
 ///
 /// Launch the binary with `--skill-probe` and this system will, over a few
-/// hundred frames: enter Skill mode, screenshot the panel (empty-state, since no
-/// content root is registered in this binary) to `/tmp/skill_mode_probe.png`, then
-/// open the skill palette (F in Skill mode — here driven directly via
-/// `CommandPaletteState`) and screenshot it to `/tmp/skill_palette_probe.png` before
-/// exiting. It's a permanent debug harness — every later Skill-panel task
-/// (populating `SkillLibrary` with real content, etc.) reuses it to confirm the
-/// panel/palette render correctly without a human driving the UI. No-op (and
-/// effectively free — one `env::args()` scan per frame) unless the flag is present.
+/// hundred frames: enter Skill mode; at frame 150, insert a TEMPLATE-created projectile skill
+/// ("probe_fireball") plus a strike-template skill it triggers on impact
+/// ("probe_fireball_explosion") directly into `SkillLibrary` (no disk — a fake, never-scanned
+/// content root just satisfies the panel's `has_content_roots` gate) and open the fireball, so
+/// frame 200's screenshot exercises the real Rules region (Task 6: readouts, tier-1 fields, the
+/// trigger card) instead of the empty state; then open the skill palette (F in Skill mode — here
+/// driven directly via `CommandPaletteState`) and screenshot it to
+/// `/tmp/skill_palette_probe.png` before exiting. It's a permanent debug harness — every later
+/// Skill-panel task reuses it to confirm the panel/palette render correctly without a human
+/// driving the UI. No-op (and effectively free — one `env::args()` scan per frame) unless the
+/// flag is present.
 fn skill_probe(
     mut next_mode: ResMut<NextState<EditorMode>>,
     mut frame: Local<u32>,
     mut commands: Commands,
     mut exit: MessageWriter<AppExit>,
     mut palette: ResMut<crate::ui::CommandPaletteState>,
+    mut skill_library: ResMut<SkillLibrary>,
 ) {
     if !std::env::args().any(|arg| arg == "--skill-probe") {
         return;
@@ -196,6 +232,51 @@ fn skill_probe(
     *frame += 1;
     match *frame {
         90 => next_mode.set(EditorMode::Skill),
+        150 => {
+            use stat_core::{SkillCondition, TriggerCondition};
+
+            let root = std::path::PathBuf::from("/tmp/skill_probe_fake_root");
+            skill_library.roots.push(root.clone());
+
+            let (mut fireball_rules, fireball_timeline) =
+                SkillArchetype::Projectile.build("probe_fireball");
+            fireball_rules.conditions.push(SkillCondition {
+                trigger_skill: "probe_fireball_explosion".to_string(),
+                additional: true,
+                condition: TriggerCondition::OnImpact,
+            });
+            let fireball_id = fireball_rules.id.clone();
+            skill_library.skills.insert(
+                fireball_id.clone(),
+                SkillEntry {
+                    rules: fireball_rules,
+                    timeline: fireball_timeline,
+                    rules_path: library::rules_path_for(&root, &fireball_id),
+                    timeline_path: library::timeline_path_for(&root, &fireball_id),
+                    dirty_rules: true,
+                    dirty_timeline: true,
+                    disk_hash: (0, 0),
+                },
+            );
+
+            let (explosion_rules, explosion_timeline) =
+                SkillArchetype::Strike.build("probe_fireball_explosion");
+            let explosion_id = explosion_rules.id.clone();
+            skill_library.skills.insert(
+                explosion_id.clone(),
+                SkillEntry {
+                    rules: explosion_rules,
+                    timeline: explosion_timeline,
+                    rules_path: library::rules_path_for(&root, &explosion_id),
+                    timeline_path: library::timeline_path_for(&root, &explosion_id),
+                    dirty_rules: true,
+                    dirty_timeline: true,
+                    disk_hash: (0, 0),
+                },
+            );
+
+            skill_library.open = Some(fireball_id);
+        }
         200 => {
             commands
                 .spawn(Screenshot::primary_window())

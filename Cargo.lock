@@ -1463,6 +1463,7 @@ dependencies = [
  "egui_commonmark",
  "fuzzy-matcher",
  "landmass_rerecast",
+ "loot_core",
  "obelisk-bevy",
  "ron 0.8.1",
  "serde",
