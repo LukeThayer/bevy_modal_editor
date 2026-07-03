@@ -92,7 +92,7 @@ pub fn timeline_path_for(root: &Path, id: &str) -> PathBuf {
     root.join("assets").join("skills").join(format!("{id}.cast.ron"))
 }
 
-fn blank_timeline(skill_id: &str) -> CastTimeline {
+pub(crate) fn blank_timeline(skill_id: &str) -> CastTimeline {
     CastTimeline {
         skill_id: skill_id.to_string(),
         phase_durations: PhaseDurations {
@@ -112,7 +112,7 @@ fn blank_timeline(skill_id: &str) -> CastTimeline {
     }
 }
 
-fn hash_bytes(bytes: &[u8]) -> u64 {
+pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::new();
     bytes.hash(&mut hasher);
     hasher.finish()
@@ -163,7 +163,7 @@ struct RawSkillsFile {
 /// one-skill-per-file layout `rules_path_for` writes). `scan_content_root` batches
 /// every file in the directory through this validation-free parse, then validates
 /// trigger references once over the merged result — see its doc comment.
-fn parse_skill_file(content: &str) -> Result<Vec<Skill>, String> {
+pub(crate) fn parse_skill_file(content: &str) -> Result<Vec<Skill>, String> {
     match toml::from_str::<RawSkillsFile>(content) {
         Ok(file) => Ok(file.skills),
         Err(array_err) => match toml::from_str::<Skill>(content) {

@@ -91,6 +91,10 @@ loot_core = { git = "ssh://git@github.com/vothuul/obelisk.git", rev = "bf9f026",
 # TOML (de)serialization for `config/skills/*.toml` content-root files (stat_core's own
 # `config::parse_skills` takes a `&str`, so the editor does its own file I/O + toml parse).
 toml = { version = "0.8", optional = true }
+# Format-preserving TOML editing (Task 8's `save_skill`): patches only the editor-owned fields
+# of an existing rules TOML in place, leaving comments/order/every other field untouched. Pinned
+# to 0.22 to match the version `toml 0.8` already resolves (see Cargo.lock) — no duplicate copy.
+toml_edit = { version = "0.22", optional = true }
 
 
 [dev-dependencies]
@@ -100,7 +104,7 @@ bevy = { workspace = true, features = ["dynamic_linking"] }
 default = []
 dynamic = ["bevy/dynamic_linking"]
 # Enables EditorMode::Skill (K key, right panel) and the obelisk-bevy integration.
-obelisk = ["dep:obelisk-bevy", "dep:stat_core", "dep:loot_core", "dep:toml"]
+obelisk = ["dep:obelisk-bevy", "dep:stat_core", "dep:loot_core", "dep:toml", "dep:toml_edit"]
 
 [[example]]
 name = "simple"

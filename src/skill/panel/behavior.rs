@@ -983,7 +983,8 @@ fn window_card(
             ui.label(egui::RichText::new(msg).small().color(colors::STATUS_ERROR));
         }
         for problem in report.for_window(&window_id) {
-            ui.label(egui::RichText::new(problem).small().color(colors::STATUS_ERROR));
+            let color = if problem.blocking { colors::STATUS_ERROR } else { colors::STATUS_WARNING };
+            ui.label(egui::RichText::new(&problem.message).small().color(color));
         }
 
         ui.add_space(2.0);

@@ -455,7 +455,8 @@ fn trigger_card(
         });
 
         for problem in report.for_condition(index) {
-            ui.label(egui::RichText::new(problem).small().color(colors::STATUS_ERROR));
+            let color = if problem.blocking { colors::STATUS_ERROR } else { colors::STATUS_WARNING };
+            ui.label(egui::RichText::new(&problem.message).small().color(color));
         }
 
         ui.add_space(2.0);
