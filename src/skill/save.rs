@@ -28,7 +28,7 @@
 //! `reload_skill` implements the first (re-scans both files, discarding in-memory edits);
 //! `save_skill_overwrite` implements the second (skips the stale-check, force-writes, then
 //! rehashes — same write path, just without the guard).
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use obelisk_bevy::assets::CastTimeline;
 
@@ -38,8 +38,14 @@ use super::library::{blank_timeline, hash_bytes, parse_skill_file, SkillEntry};
 /// EXISTING document. Every other key (description, tags, targeting, delivery,
 /// attack_speed_modifier, consumes_self_effect, consumes_target_effect, use_conditions,
 /// global_conditionals, conditional_modifiers, grants_elude_stacks, use_message, hint,
-/// hint_effect, and any comments anywhere in the file) is untouched — round-tripped byte-for-
-/// byte via the existing `toml_edit::DocumentMut` the patch is applied to.
+/// hint_effect) is untouched — round-tripped byte-for-byte via the existing
+/// `toml_edit::DocumentMut` the patch is applied to. Comments are preserved ONLY where they sit
+/// outside an owned key's value: a top-of-file note, a comment on `description`, a trailing
+/// comment on a sibling `[[skills]]` entry, etc. Comments written INSIDE an owned composite value
+/// — e.g. a hand-annotated line inside a `[[conditions]]` block or `effect_applications` array —
+/// do NOT survive: `fresh.get(key)` is a freshly `toml_edit`-serialized value with no comment
+/// data, and assigning it (`target[*key] = item.clone()`) replaces the owned key's entire
+/// subtree, comments included.
 const OWNED_RULES_FIELDS: &[&str] = &["id", "name", "mana_cost", "cooldown", "damage", "conditions", "effect_applications"];
 
 /// Which disk target a save/stale-check failure is about.
@@ -72,6 +78,11 @@ pub enum SaveError {
     /// was true. `save_skill` never constructs this itself (see the module doc comment) — it
     /// exists so the panel's "last save error" slot has one type to hold regardless of cause.
     Blocked(Vec<String>),
+    /// `entry.rules_path` exists on disk but doesn't contain `id` in it. Patching would mean
+    /// guessing where to splice a brand-new skill into someone else's TOML structure; falling
+    /// back to a clean single-skill document would silently discard every other skill already in
+    /// the file. Neither is acceptable, so the save is refused outright — nothing is written.
+    SkillNotInFile { id: String, path: PathBuf },
 }
 
 impl std::fmt::Display for SaveError {
@@ -82,6 +93,9 @@ impl std::fmt::Display for SaveError {
                 write!(f, "{which} file changed on disk since it was loaded — reload or overwrite")
             }
             SaveError::Blocked(reasons) => write!(f, "blocked by {} validation problem(s)", reasons.len()),
+            SaveError::SkillNotInFile { id, path } => {
+                write!(f, "skill '{id}' not found in {path:?} — refusing to replace the file")
+            }
         }
     }
 }
@@ -154,7 +168,7 @@ fn check_stale(entry: &SkillEntry) -> Result<(), SaveError> {
 
 fn write_dirty(entry: &mut SkillEntry) -> Result<(), SaveError> {
     if entry.dirty_rules {
-        let rendered = render_rules_toml(entry).map_err(|e| io_err(SaveTarget::Rules, e))?;
+        let rendered = render_rules_toml(entry)?;
         write_file(&entry.rules_path, &rendered).map_err(|e| io_err(SaveTarget::Rules, e))?;
         entry.disk_hash.0 = hash_bytes(rendered.as_bytes());
         entry.dirty_rules = false;
@@ -179,13 +193,14 @@ fn write_file(path: &Path, content: &str) -> std::io::Result<()> {
 /// Render `entry.rules` as a TOML document: if `entry.rules_path` exists on disk, load it and
 /// patch ONLY `OWNED_RULES_FIELDS` in place (format-preserving — comments, key order, and every
 /// non-owned field survive untouched); otherwise (a brand-new skill) emit a clean document.
-fn render_rules_toml(entry: &SkillEntry) -> Result<String, String> {
-    let fresh = toml_edit::ser::to_document(&entry.rules).map_err(|e| e.to_string())?;
+fn render_rules_toml(entry: &SkillEntry) -> Result<String, SaveError> {
+    let fresh = toml_edit::ser::to_document(&entry.rules).map_err(|e| io_err(SaveTarget::Rules, e))?;
 
     let Ok(existing) = std::fs::read_to_string(&entry.rules_path) else {
         return Ok(fresh.to_string());
     };
-    let mut doc: toml_edit::DocumentMut = existing.parse().map_err(|e: toml_edit::TomlError| e.to_string())?;
+    let mut doc: toml_edit::DocumentMut =
+        existing.parse().map_err(|e: toml_edit::TomlError| io_err(SaveTarget::Rules, e))?;
 
     match find_skill_table(&mut doc, &entry.rules.id) {
         Some(target) => {
@@ -196,11 +211,12 @@ fn render_rules_toml(entry: &SkillEntry) -> Result<String, String> {
             }
             Ok(doc.to_string())
         }
-        // The existing file doesn't (yet) contain this id — e.g. it was just renamed into a
-        // path with no prior content, or the id genuinely isn't in the file it's pathed at.
-        // Fall back to a clean document for this file rather than guessing where to splice a
-        // brand-new skill into someone else's TOML structure.
-        None => Ok(fresh.to_string()),
+        // The existing file doesn't contain this id — e.g. it was just renamed into a path with
+        // no prior content, or the id genuinely isn't in the file it's pathed at. Refuse rather
+        // than fall back to a clean single-skill document: if this file already holds OTHER
+        // skills (a multi-skill `[[skills]]` file), overwriting it with a fresh document for
+        // just this one id would silently destroy them. Nothing is written.
+        None => Err(SaveError::SkillNotInFile { id: entry.rules.id.clone(), path: entry.rules_path.clone() }),
     }
 }
 
@@ -375,6 +391,50 @@ mod tests {
         let after = std::fs::read_to_string(&rules_path).unwrap();
         assert!(after.contains("mana_cost = 7"), "{after}");
         assert!(after.contains("mana_cost = 99"), "sibling entry must be untouched: {after}");
+    }
+
+    #[test]
+    fn id_not_found_in_existing_multi_skill_file_errors_without_writing() {
+        let root = TempRoot::new("id_missing");
+        std::fs::create_dir_all(root.path()).unwrap();
+        let rules_path = root.path().join("skills.toml");
+        let original = "[[skills]]\n\
+             id = \"bolt\"\n\
+             name = \"Bolt\"\n\
+             mana_cost = 5.0\n\
+             cooldown = 1.0\n\n\
+             [[skills]]\n\
+             id = \"other\"\n\
+             name = \"Other\"\n\
+             mana_cost = 99.0\n\
+             cooldown = 1.0\n";
+        std::fs::write(&rules_path, original).unwrap();
+
+        // entry's id ("ghost") is not present in the file at all.
+        let (rules, timeline) = strike_template("ghost");
+        let mut entry = SkillEntry {
+            rules,
+            timeline,
+            rules_path: rules_path.clone(),
+            timeline_path: root.path().join("ghost.cast.ron"),
+            dirty_rules: true,
+            dirty_timeline: false,
+            disk_hash: (hash_bytes(std::fs::read(&rules_path).unwrap().as_slice()), 0),
+        };
+
+        let result = save_skill(&mut entry);
+        match result {
+            Err(SaveError::SkillNotInFile { id, path }) => {
+                assert_eq!(id, "ghost");
+                assert_eq!(path, rules_path);
+            }
+            other => panic!("expected SkillNotInFile, got {other:?}"),
+        }
+        assert!(entry.dirty_rules, "dirty flag must be unchanged on refusal");
+
+        // The file's bytes must be completely untouched — no wholesale replacement.
+        let after = std::fs::read_to_string(&rules_path).unwrap();
+        assert_eq!(after, original, "multi-skill file must not be replaced when the id is missing");
     }
 
     // --- stale-check ---

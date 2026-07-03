@@ -372,7 +372,11 @@ fn draw_save_header(
             if let Some(which) = stale_prompt {
                 if ui
                     .button("Overwrite")
-                    .on_hover_text("Force-write the editor's copy, ignoring the on-disk change")
+                    .on_hover_text(
+                        "Force-write despite the on-disk change: rules are re-patched onto the newest \
+                         on-disk file (other on-disk edits to rules survive), timeline is fully rewritten \
+                         from the editor's copy",
+                    )
                     .clicked()
                 {
                     *overwrite_clicked = true;
