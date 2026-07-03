@@ -1466,6 +1466,8 @@ dependencies = [
  "obelisk-bevy",
  "ron 0.8.1",
  "serde",
+ "stat_core",
+ "toml",
 ]
 
 [[package]]

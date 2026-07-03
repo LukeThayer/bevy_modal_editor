@@ -6,14 +6,24 @@
 //! `editor::input` is `#[cfg(feature = "obelisk")]`, and this module (which
 //! owns the panel and every skill system) is not compiled in at all.
 //!
-//! Currently this is a structural skeleton: the panel (drawn by
-//! `draw_skill_panel` below, registered via `ui::skill_editor::SkillEditorPlugin`
-//! per the panel-plugin convention — see that module) shows an empty
-//! placeholder. Task 5 replaces the panel body with `SkillLibrary`, which
-//! will live in this module.
+//! The panel (drawn by `draw_skill_panel` below, registered via
+//! `ui::skill_editor::SkillEditorPlugin` per the panel-plugin convention — see that
+//! module) shows the currently open skill's id, or an empty-state hint when no
+//! content root has been registered yet. `library` (Task 5) owns `SkillLibrary` +
+//! content-root scanning; `templates` owns the archetype starter templates.
 //!
-//! `SkillModePlugin` here owns only non-UI systems (currently just the
-//! probe); it is registered from `EditorPlugin::build`.
+//! `SkillModePlugin` here owns non-UI systems: the `SkillLibrary`/content-root
+//! machinery and the probe; it is registered from `EditorPlugin::build`.
+
+pub mod library;
+pub mod templates;
+
+pub use library::{
+    delete_skill, duplicate_skill, insert_new_skill, rename_skill, scan_and_merge_root,
+    scan_content_root, skills_referencing, unique_id, PendingContentRoots, RegisterObeliskContentExt,
+    SkillEntry, SkillLibrary,
+};
+pub use templates::SkillArchetype;
 
 use bevy::app::AppExit;
 use bevy::prelude::*;
@@ -27,7 +37,10 @@ pub struct SkillModePlugin;
 
 impl Plugin for SkillModePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, skill_probe);
+        app.init_resource::<SkillLibrary>()
+            .init_resource::<PendingContentRoots>()
+            .add_systems(Startup, library::scan_registered_content_roots)
+            .add_systems(Update, skill_probe);
     }
 }
 
@@ -78,6 +91,11 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
 
     let mut pin_toggled = false;
 
+    let library = world.resource::<SkillLibrary>();
+    let open_skill = library.open.clone();
+    let has_content_roots = !library.roots.is_empty();
+    let skill_count = library.skills.len();
+
     egui::Window::new("Skill")
         .id(egui::Id::new("skill_editor_panel"))
         .frame(panel_frame(&ctx.style()))
@@ -106,10 +124,42 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new("SkillLibrary lands in Task 5")
-                            .color(colors::TEXT_SECONDARY),
-                    );
+                    if !has_content_roots {
+                        ui.label(
+                            egui::RichText::new("No content roots registered")
+                                .color(colors::TEXT_SECONDARY),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "Call RegisterObeliskContentExt::register_obelisk_content(root) \
+                                 to point Skill mode at a content root.",
+                            )
+                            .color(colors::TEXT_SECONDARY)
+                            .small(),
+                        );
+                        return;
+                    }
+
+                    match &open_skill {
+                        Some(id) => {
+                            ui.label(egui::RichText::new(id).strong().color(colors::ACCENT_PURPLE));
+                            ui.label(
+                                egui::RichText::new("regions land in Tasks 6-9")
+                                    .color(colors::TEXT_SECONDARY),
+                            );
+                        }
+                        None => {
+                            ui.label(
+                                egui::RichText::new(format!("{skill_count} skill(s) loaded"))
+                                    .color(colors::TEXT_SECONDARY),
+                            );
+                            ui.label(
+                                egui::RichText::new("Press F to open or create a skill")
+                                    .color(colors::TEXT_SECONDARY)
+                                    .small(),
+                            );
+                        }
+                    }
                 });
         });
 
@@ -121,20 +171,23 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
     }
 }
 
-/// Frame-scripted probe for headless verification of the Skill panel.
+/// Frame-scripted probe for headless verification of the Skill panel and palette.
 ///
 /// Launch the binary with `--skill-probe` and this system will, over a few
-/// hundred frames: enter Skill mode, take a screenshot to
-/// `/tmp/skill_mode_probe.png`, then exit. It's a permanent debug harness —
-/// every later Skill-panel task (populating `SkillLibrary`, etc.) reuses it
-/// to confirm the panel renders correctly without a human driving the UI.
-/// No-op (and effectively free — one `env::args()` scan per frame) unless
-/// the flag is present.
+/// hundred frames: enter Skill mode, screenshot the panel (empty-state, since no
+/// content root is registered in this binary) to `/tmp/skill_mode_probe.png`, then
+/// open the skill palette (F in Skill mode — here driven directly via
+/// `CommandPaletteState`) and screenshot it to `/tmp/skill_palette_probe.png` before
+/// exiting. It's a permanent debug harness — every later Skill-panel task
+/// (populating `SkillLibrary` with real content, etc.) reuses it to confirm the
+/// panel/palette render correctly without a human driving the UI. No-op (and
+/// effectively free — one `env::args()` scan per frame) unless the flag is present.
 fn skill_probe(
     mut next_mode: ResMut<NextState<EditorMode>>,
     mut frame: Local<u32>,
     mut commands: Commands,
     mut exit: MessageWriter<AppExit>,
+    mut palette: ResMut<crate::ui::CommandPaletteState>,
 ) {
     if !std::env::args().any(|arg| arg == "--skill-probe") {
         return;
@@ -148,7 +201,13 @@ fn skill_probe(
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk("/tmp/skill_mode_probe.png"));
         }
-        320 => {
+        210 => palette.open_skill_preset(),
+        270 => {
+            commands
+                .spawn(Screenshot::primary_window())
+                .observe(save_to_disk("/tmp/skill_palette_probe.png"));
+        }
+        380 => {
             exit.write(AppExit::Success);
         }
         _ => {}
