@@ -266,6 +266,11 @@ impl Plugin for EditorPlugin {
             // UI
             .add_plugins(UiPlugin);
 
+        // Skill mode (obelisk integration) — panel + probe. EditorMode::Skill
+        // always exists, but is unreachable without this plugin.
+        #[cfg(feature = "obelisk")]
+        app.add_plugins(crate::skill::SkillModePlugin);
+
         // Shading mode system
         app.add_systems(Update, apply_shading_mode.run_if(resource_changed::<ViewportShadingMode>));
 

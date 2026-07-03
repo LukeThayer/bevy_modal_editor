@@ -201,6 +201,20 @@ fn handle_mode_input(
         return;
     }
 
+    // K enters Skill mode (only from View mode or with Shift; requires the
+    // `obelisk` feature — without it EditorMode::Skill is unreachable).
+    #[cfg(feature = "obelisk")]
+    if keyboard.just_pressed(KeyCode::KeyK) {
+        if *current_mode.get() == EditorMode::Skill {
+            next_mode.set(EditorMode::View);
+        } else if can_change_mode {
+            next_mode.set(EditorMode::Skill);
+            *transform_op = TransformOperation::None;
+            *axis_constraint = AxisConstraint::None;
+        }
+        return;
+    }
+
     // Escape returns to View mode from any mode, unless a popup is open
     // (let the popup handle Escape first)
     if keyboard.just_pressed(KeyCode::Escape) {
@@ -236,7 +250,7 @@ fn handle_mode_input(
                 // With Shift, can enter Edit mode from any mode
                 next_mode.set(EditorMode::Edit);
             }
-            EditorMode::Insert | EditorMode::ObjectInspector | EditorMode::Hierarchy | EditorMode::Blockout | EditorMode::Material | EditorMode::Camera | EditorMode::Particle | EditorMode::AI | EditorMode::Effect => {}
+            EditorMode::Insert | EditorMode::ObjectInspector | EditorMode::Hierarchy | EditorMode::Blockout | EditorMode::Material | EditorMode::Camera | EditorMode::Particle | EditorMode::AI | EditorMode::Effect | EditorMode::Skill => {}
         }
         return;
     }

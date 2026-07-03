@@ -73,6 +73,10 @@ dirs = "6"
 fuzzy-matcher = "0.3"
 egui_commonmark = "0.22"
 bevy_gaussian_splatting = { git = "https://github.com/Nub/bevy_gaussian_splatting.git", branch = "main", default-features = false, features = ["planar", "io_ply", "io_flexbuffers", "buffer_storage", "sort_rayon"] }
+# Optional: obelisk-bevy integration (Skill mode). Pinned to the current tip of
+# `main` at the time this dependency was added — bump the rev deliberately when
+# picking up upstream changes.
+obelisk-bevy = { git = "https://github.com/LukeThayer/bevy-obelisk", rev = "ebbecc2ac55daba5b109b0ac44ea2970cbf9060b", optional = true }
 
 
 [dev-dependencies]
@@ -81,6 +85,8 @@ bevy = { workspace = true, features = ["dynamic_linking"] }
 [features]
 default = []
 dynamic = ["bevy/dynamic_linking"]
+# Enables EditorMode::Skill (K key, right panel) and the obelisk-bevy integration.
+obelisk = ["dep:obelisk-bevy"]
 
 [[example]]
 name = "simple"
