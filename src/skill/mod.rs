@@ -6,13 +6,19 @@
 //! `editor::input` is `#[cfg(feature = "obelisk")]`, and this module (which
 //! owns the panel and every skill system) is not compiled in at all.
 //!
-//! Currently this is a structural skeleton: `SkillModePlugin` draws an empty
-//! placeholder panel. Task 5 replaces the panel body with `SkillLibrary`.
+//! Currently this is a structural skeleton: the panel (drawn by
+//! `draw_skill_panel` below, registered via `ui::skill_editor::SkillEditorPlugin`
+//! per the panel-plugin convention — see that module) shows an empty
+//! placeholder. Task 5 replaces the panel body with `SkillLibrary`, which
+//! will live in this module.
+//!
+//! `SkillModePlugin` here owns only non-UI systems (currently just the
+//! probe); it is registered from `EditorPlugin::build`.
 
 use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
-use bevy_egui::{egui, EguiPrimaryContextPass};
+use bevy_egui::egui;
 
 use crate::editor::{EditorMode, EditorState, PanelSide, PinnedWindows};
 use crate::ui::theme::{colors, draw_pin_button, panel, panel_frame};
@@ -21,8 +27,7 @@ pub struct SkillModePlugin;
 
 impl Plugin for SkillModePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(EguiPrimaryContextPass, draw_skill_panel)
-            .add_systems(Update, skill_probe);
+        app.add_systems(Update, skill_probe);
     }
 }
 
@@ -31,8 +36,11 @@ impl Plugin for SkillModePlugin {
 /// Copies the `ai_editor.rs` template shape: right-side window, pinnable,
 /// visible when in Skill mode or pinned while another right-side mode is
 /// active (in which case it's displaced to the left, same as every other
-/// panel).
-fn draw_skill_panel(world: &mut World) {
+/// panel). Registered by `ui::skill_editor::SkillEditorPlugin` (this fn
+/// stays here, alongside the future `SkillLibrary`, per the panel-plugin
+/// convention: UI-layer plugins register draw systems; this module owns the
+/// data/logic).
+pub(crate) fn draw_skill_panel(world: &mut World) {
     if !world.resource::<EditorState>().ui_enabled {
         return;
     }

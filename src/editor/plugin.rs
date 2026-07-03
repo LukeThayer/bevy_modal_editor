@@ -266,7 +266,11 @@ impl Plugin for EditorPlugin {
             // UI
             .add_plugins(UiPlugin);
 
-        // Skill mode (obelisk integration) — panel + probe. EditorMode::Skill
+        // Skill mode (obelisk integration) — non-UI systems (currently just
+        // the probe). The panel itself is registered by
+        // `ui::skill_editor::SkillEditorPlugin` inside `UiPlugin` (see
+        // src/ui/mod.rs), per the panel-plugin convention used by every
+        // other mode (ai_editor, effect_editor, vfx_editor). EditorMode::Skill
         // always exists, but is unreachable without this plugin.
         #[cfg(feature = "obelisk")]
         app.add_plugins(crate::skill::SkillModePlugin);

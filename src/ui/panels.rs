@@ -319,7 +319,6 @@ fn get_hints_for_mode(
 ) -> Vec<(&'static str, &'static str)> {
     match mode {
         EditorMode::View => {
-            #[allow(unused_mut)]
             let mut hints = vec![
                 ("E", "Edit"),
                 ("I", "Insert"),
