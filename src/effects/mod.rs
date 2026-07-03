@@ -1,6 +1,9 @@
 pub mod data;
 pub mod presets;
 
+#[cfg(test)]
+mod tests;
+
 pub use data::*;
 
 use std::collections::HashMap;
