@@ -15,6 +15,7 @@
 //! `SkillModePlugin` here owns non-UI systems: the `SkillLibrary`/content-root
 //! machinery and the probe; it is registered from `EditorPlugin::build`.
 
+pub mod edits;
 pub mod library;
 pub mod panel;
 pub mod readouts;
@@ -43,10 +44,21 @@ impl Plugin for SkillModePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SkillLibrary>()
             .init_resource::<PendingContentRoots>()
+            .init_resource::<SkillPanelScrollHint>()
             .add_systems(Startup, library::scan_registered_content_roots)
             .add_systems(Update, skill_probe);
     }
 }
+
+/// Debug-only scroll-position override for the Skill panel's `ScrollArea`, consumed by
+/// `draw_skill_panel` (forces `ScrollArea::vertical_scroll_offset` when `> 0.0`; `0.0`,
+/// the default, leaves scrolling entirely to the user as normal). Exists solely so
+/// `skill_probe` can script the panel to a specific scroll position before a screenshot
+/// (a long region — e.g. Behavior's window cards — otherwise renders below the visible
+/// fold with no mouse to scroll it in a headless run). Real interactive use never
+/// touches this resource, so it's always `0.0` outside `--skill-probe`.
+#[derive(Resource, Default)]
+pub struct SkillPanelScrollHint(pub f32);
 
 /// Draw the Skill panel (exclusive world access).
 ///
@@ -94,6 +106,7 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
     };
 
     let mut pin_toggled = false;
+    let scroll_hint = world.resource::<SkillPanelScrollHint>().0;
 
     let library = world.resource::<SkillLibrary>();
     let open_skill = library.open.clone();
@@ -135,8 +148,11 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
             });
             ui.separator();
 
-            egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
+            let mut scroll_area = egui::ScrollArea::vertical().auto_shrink([false; 2]);
+            if scroll_hint > 0.0 {
+                scroll_area = scroll_area.vertical_scroll_offset(scroll_hint);
+            }
+            scroll_area
                 .show(ui, |ui| {
                     if !has_content_roots {
                         ui.label(
@@ -162,11 +178,9 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
                             panel::rules::draw_rules_region(ui, entry, library, &report);
 
                             ui.separator();
-                            ui.label(
-                                egui::RichText::new("Behavior — lands in Task 7")
-                                    .color(colors::TEXT_SECONDARY)
-                                    .small(),
-                            );
+                            panel::behavior::draw_behavior_region(ui, entry, &report);
+
+                            ui.separator();
                             ui.label(
                                 egui::RichText::new("Presentation — lands in Task 9")
                                     .color(colors::TEXT_SECONDARY)
@@ -210,13 +224,15 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
 /// ("probe_fireball") plus a strike-template skill it triggers on impact
 /// ("probe_fireball_explosion") directly into `SkillLibrary` (no disk — a fake, never-scanned
 /// content root just satisfies the panel's `has_content_roots` gate) and open the fireball, so
-/// frame 200's screenshot exercises the real Rules region (Task 6: readouts, tier-1 fields, the
-/// trigger card) instead of the empty state; then open the skill palette (F in Skill mode — here
-/// driven directly via `CommandPaletteState`) and screenshot it to
-/// `/tmp/skill_palette_probe.png` before exiting. It's a permanent debug harness — every later
-/// Skill-panel task reuses it to confirm the panel/palette render correctly without a human
-/// driving the UI. No-op (and effectively free — one `env::args()` scan per frame) unless the
-/// flag is present.
+/// frame 200's screenshot (`/tmp/skill_mode_probe.png`) exercises the real Rules region (Task 6:
+/// readouts, tier-1 fields, the trigger card) instead of the empty state; then (Task 7) scrolls
+/// the panel down via `SkillPanelScrollHint` and screenshots the Behavior region — Acquisition
+/// card + `probe_fireball`'s one window card — to `/tmp/skill_mode_probe_behavior.png`; then
+/// opens the skill palette (F in Skill mode — here driven directly via `CommandPaletteState`)
+/// and screenshots it to `/tmp/skill_palette_probe.png` before exiting. It's a permanent debug
+/// harness — every later Skill-panel task reuses it to confirm the panel/palette render
+/// correctly without a human driving the UI. No-op (and effectively free — one `env::args()`
+/// scan per frame) unless the flag is present.
 fn skill_probe(
     mut next_mode: ResMut<NextState<EditorMode>>,
     mut frame: Local<u32>,
@@ -224,6 +240,7 @@ fn skill_probe(
     mut exit: MessageWriter<AppExit>,
     mut palette: ResMut<crate::ui::CommandPaletteState>,
     mut skill_library: ResMut<SkillLibrary>,
+    mut scroll_hint: ResMut<SkillPanelScrollHint>,
 ) {
     if !std::env::args().any(|arg| arg == "--skill-probe") {
         return;
@@ -282,13 +299,25 @@ fn skill_probe(
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk("/tmp/skill_mode_probe.png"));
         }
-        210 => palette.open_skill_preset(),
-        270 => {
+        // Task 7: scroll the panel down (via `SkillPanelScrollHint` — no mouse to drag a
+        // real scrollbar in a headless run) so the Behavior region's Acquisition card and
+        // `probe_fireball`'s one window card ("bolt") are both in frame for the next
+        // screenshot; Rules' readouts/tier-1/triggers scroll off the top, already covered
+        // by the frame-200 shot above.
+        205 => scroll_hint.0 = 820.0,
+        220 => {
+            commands
+                .spawn(Screenshot::primary_window())
+                .observe(save_to_disk("/tmp/skill_mode_probe_behavior.png"));
+        }
+        225 => scroll_hint.0 = 0.0,
+        240 => palette.open_skill_preset(),
+        300 => {
             commands
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk("/tmp/skill_palette_probe.png"));
         }
-        380 => {
+        400 => {
             exit.write(AppExit::Success);
         }
         _ => {}

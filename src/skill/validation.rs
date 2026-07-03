@@ -35,6 +35,20 @@ impl ValidationReport {
             .filter(move |(id, _)| *id == target)
             .map(|(_, msg)| msg.as_str())
     }
+
+    /// Problems whose `target_id` is `"window:{window_id}"` — the lookup Task 7's Behavior
+    /// region window cards use (the doc comment above calls out "widen this to name
+    /// windows/... as those regions grow their own validation"; this is that widening).
+    /// Unused by `validate_skill_stub` today (still always empty) — exercised by
+    /// `window_problems_filters_by_target_id` below so the contract holds, same shape as
+    /// `for_condition`.
+    pub fn for_window<'a>(&'a self, window_id: &str) -> impl Iterator<Item = &'a str> {
+        let target = format!("window:{window_id}");
+        self.problems
+            .iter()
+            .filter(move |(id, _)| *id == target)
+            .map(|(_, msg)| msg.as_str())
+    }
 }
 
 /// Stub: always returns an empty report. Task 8 replaces the internals with the real
@@ -67,5 +81,18 @@ mod tests {
         let msgs: Vec<&str> = report.for_condition(0).collect();
         assert_eq!(msgs, vec!["dangling trigger_skill"]);
         assert!(report.for_condition(2).next().is_none());
+    }
+
+    #[test]
+    fn window_problems_filters_by_target_id() {
+        let report = ValidationReport {
+            problems: vec![
+                ("window:bolt".to_string(), "anchors on CastPoint".to_string()),
+                ("condition:0".to_string(), "unrelated".to_string()),
+            ],
+        };
+        let msgs: Vec<&str> = report.for_window("bolt").collect();
+        assert_eq!(msgs, vec!["anchors on CastPoint"]);
+        assert!(report.for_window("zone").next().is_none());
     }
 }

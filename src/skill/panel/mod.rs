@@ -5,4 +5,5 @@
 //! flipping the relevant `dirty_*` flag on every change; the caller owns writing the edited
 //! clone back into `SkillLibrary`).
 
+pub mod behavior;
 pub mod rules;
