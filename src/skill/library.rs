@@ -147,10 +147,54 @@ impl RegisterObeliskContentExt for App {
     }
 }
 
+/// Mirrors `stat_core::config::skills::SkillsFileNew` (private to that crate): the
+/// `[[skills]]` array shape a rules TOML can take.
+#[derive(serde::Deserialize)]
+struct RawSkillsFile {
+    skills: Vec<Skill>,
+}
+
+/// Parse one rules TOML's skill(s) with NO cross-reference validation. Same two-shape
+/// fallback as `stat_core::config::load_skills_dir`: try the `[[skills]]` array format
+/// first, then a single top-level skill. Deliberately does not call
+/// `stat_core::config::parse_skills`/`load_skills` — both validate every
+/// `SkillCondition.trigger_skill` against skills parsed from the SAME call, which
+/// rejects a perfectly valid file whose trigger reference lands in a sibling file (the
+/// one-skill-per-file layout `rules_path_for` writes). `scan_content_root` batches
+/// every file in the directory through this validation-free parse, then validates
+/// trigger references once over the merged result — see its doc comment.
+fn parse_skill_file(content: &str) -> Result<Vec<Skill>, String> {
+    match toml::from_str::<RawSkillsFile>(content) {
+        Ok(file) => Ok(file.skills),
+        Err(array_err) => match toml::from_str::<Skill>(content) {
+            Ok(skill) => Ok(vec![skill]),
+            Err(_) => Err(array_err.to_string()),
+        },
+    }
+}
+
+/// One rules-TOML-derived skill, pending timeline pairing — `scan_content_root`'s
+/// intermediate batch entry.
+struct ParsedRules {
+    rules: Skill,
+    path: PathBuf,
+    rules_hash: u64,
+}
+
 /// Scan `root`'s `config/skills/*.toml` files into a fresh `SkillEntry` map. Pure
 /// (besides the disk reads) — no `SkillLibrary` mutation, so it's directly testable
 /// and directly reusable for both the `Startup` scan and the palette's "Rescan
 /// content" action.
+///
+/// Reads and parses every file in the directory FIRST, merges into one map, THEN
+/// validates trigger references over the merged whole — the same read-all-then-
+/// validate-once ordering `stat_core::config::load_skills_dir` uses for a single
+/// directory, extended here to also cover file-vs-file references (a skill in
+/// `firebolt.toml` whose condition triggers a skill defined in `explosion.toml`).
+/// A dangling trigger reference (points at no skill anywhere in `root`) warns but
+/// does NOT drop the skill — Task 8's `ValidationRegistry` is where that surfaces as
+/// a user-facing error; silently dropping content here would just be a different
+/// shape of the bug this batching fixes.
 pub fn scan_content_root(root: &Path) -> BTreeMap<String, SkillEntry> {
     let mut skills = BTreeMap::new();
     let skills_dir = root.join("config").join("skills");
@@ -158,6 +202,7 @@ pub fn scan_content_root(root: &Path) -> BTreeMap<String, SkillEntry> {
         return skills;
     };
 
+    let mut parsed_by_id: BTreeMap<String, ParsedRules> = BTreeMap::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("toml") {
@@ -167,48 +212,66 @@ pub fn scan_content_root(root: &Path) -> BTreeMap<String, SkillEntry> {
             warn!("Failed to read skill rules file: {:?}", path);
             continue;
         };
-
-        // Same two-shape fallback as `stat_core::config::load_skills_dir`: try the
-        // `[[skills]]` array format first, then a single top-level skill.
-        let parsed: Vec<Skill> = match stat_core::config::parse_skills(&content) {
-            Ok(map) => map.into_values().collect(),
-            Err(_) => match toml::from_str::<Skill>(&content) {
-                Ok(skill) => vec![skill],
-                Err(e) => {
-                    warn!("Failed to parse skill rules {:?}: {}", path, e);
-                    continue;
-                }
-            },
-        };
         let rules_hash = hash_bytes(content.as_bytes());
 
-        for rules in parsed {
-            let id = rules.id.clone();
-            let timeline_path = timeline_path_for(root, &id);
-            let (timeline, timeline_hash) = match std::fs::read_to_string(&timeline_path) {
-                Ok(tl_content) => match ron::de::from_str::<CastTimeline>(&tl_content) {
-                    Ok(tl) => (tl, hash_bytes(tl_content.as_bytes())),
-                    Err(e) => {
-                        warn!("Failed to parse timeline {:?}: {}", timeline_path, e);
-                        (blank_timeline(&id), 0)
-                    }
-                },
-                Err(_) => (blank_timeline(&id), 0),
-            };
-
-            skills.insert(
-                id,
-                SkillEntry {
-                    rules,
-                    timeline,
-                    rules_path: path.clone(),
-                    timeline_path,
-                    dirty_rules: false,
-                    dirty_timeline: false,
-                    disk_hash: (rules_hash, timeline_hash),
-                },
-            );
+        match parse_skill_file(&content) {
+            Ok(rules_list) => {
+                for rules in rules_list {
+                    parsed_by_id.insert(
+                        rules.id.clone(),
+                        ParsedRules {
+                            rules,
+                            path: path.clone(),
+                            rules_hash,
+                        },
+                    );
+                }
+            }
+            Err(e) => {
+                warn!("Failed to parse skill rules {:?}: {}", path, e);
+            }
         }
+    }
+
+    // Validate trigger references once, over the FULL merged batch — mirrors
+    // `stat_core::config::skills::validate_skill_trigger_references` semantics, minus
+    // the hard failure: warn and keep.
+    for parsed in parsed_by_id.values() {
+        for cond in &parsed.rules.conditions {
+            if !parsed_by_id.contains_key(&cond.trigger_skill) {
+                warn!(
+                    "Skill '{}' ({:?}) references unknown trigger_skill '{}'",
+                    parsed.rules.id, parsed.path, cond.trigger_skill
+                );
+            }
+        }
+    }
+
+    for (id, parsed) in parsed_by_id {
+        let timeline_path = timeline_path_for(root, &id);
+        let (timeline, timeline_hash) = match std::fs::read_to_string(&timeline_path) {
+            Ok(tl_content) => match ron::de::from_str::<CastTimeline>(&tl_content) {
+                Ok(tl) => (tl, hash_bytes(tl_content.as_bytes())),
+                Err(e) => {
+                    warn!("Failed to parse timeline {:?}: {}", timeline_path, e);
+                    (blank_timeline(&id), 0)
+                }
+            },
+            Err(_) => (blank_timeline(&id), 0),
+        };
+
+        skills.insert(
+            id,
+            SkillEntry {
+                rules: parsed.rules,
+                timeline,
+                rules_path: parsed.path,
+                timeline_path,
+                dirty_rules: false,
+                dirty_timeline: false,
+                disk_hash: (parsed.rules_hash, timeline_hash),
+            },
+        );
     }
 
     skills
@@ -283,17 +346,25 @@ pub fn unique_id(base: &str, library: &SkillLibrary) -> String {
 
 /// Insert a freshly authored (unsaved, dirty) skill entry, pathed under
 /// `write_root`. Used both by "New Skill (archetype)" and `duplicate_skill` — Task 8
-/// owns actually writing the files this points at. Returns `false` (no-op) if
-/// `rules.id` is already taken.
+/// owns actually writing the files this points at.
+///
+/// `write_root` is `Option` on purpose: callers must pass `SkillLibrary::default_root()`
+/// through unchanged rather than fabricating a fallback path (e.g. `PathBuf::from(".")`)
+/// when no content root is registered — that used to write skills into the process's
+/// cwd silently. Returns `None` (no-op) when `write_root` is `None` OR `rules.id` is
+/// already taken; the palette is expected to disable "New Skill" rows instead of ever
+/// calling this with a fabricated root (see `skill_preset.rs`'s `SkillLibrary::roots`
+/// empty-state gate). Returns `Some(id)` on success.
 pub fn insert_new_skill(
     library: &mut SkillLibrary,
     rules: Skill,
     timeline: CastTimeline,
-    write_root: &Path,
-) -> bool {
+    write_root: Option<&Path>,
+) -> Option<String> {
+    let write_root = write_root?;
     let id = rules.id.clone();
     if library.skills.contains_key(&id) {
-        return false;
+        return None;
     }
     library.skills.insert(
         id.clone(),
@@ -307,7 +378,7 @@ pub fn insert_new_skill(
             disk_hash: (0, 0),
         },
     );
-    true
+    Some(id)
 }
 
 /// Duplicate `source_id`'s entry under a fresh id derived from it (`{source_id}_copy`,
@@ -519,7 +590,10 @@ mod tests {
         let write_root = PathBuf::from("/tmp/does_not_need_to_exist_for_this_test");
 
         let (rules, timeline) = crate::skill::templates::strike_template("bolt");
-        assert!(insert_new_skill(&mut library, rules, timeline, &write_root));
+        assert_eq!(
+            insert_new_skill(&mut library, rules, timeline, Some(&write_root)),
+            Some("bolt".to_string())
+        );
         assert!(library.skills.contains_key("bolt"));
 
         let dup_id = duplicate_skill(&mut library, "bolt", &write_root).expect("duplicate");
@@ -534,5 +608,93 @@ mod tests {
         assert!(delete_skill(&mut library, "bolt2"));
         assert!(!library.skills.contains_key("bolt2"));
         assert!(library.skills.contains_key("bolt"));
+    }
+
+    #[test]
+    fn insert_new_skill_refuses_to_fabricate_a_root() {
+        let mut library = SkillLibrary::default();
+        let (rules, timeline) = crate::skill::templates::strike_template("bolt");
+
+        // No content root registered — `write_root` is `None` (what
+        // `SkillLibrary::default_root()` returns when `roots` is empty). Must not
+        // fabricate a fallback path (e.g. cwd) and must not insert anything.
+        assert_eq!(insert_new_skill(&mut library, rules, timeline, None), None);
+        assert!(library.skills.is_empty());
+    }
+
+    /// Writes one skill per file, in `stat_core`'s single-top-level-skill shape (no
+    /// `[[skills]]` wrapper) — the exact layout `rules_path_for` produces, and the
+    /// shape the reviewer's repro used.
+    fn write_single_skill_file(root: &Path, skill: &Skill) {
+        let path = rules_path_for(root, &skill.id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, toml::to_string(skill).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn cross_file_trigger_reference_survives_the_scan() {
+        // Reviewer's repro: explosion.toml + firebolt.toml, firebolt's condition
+        // triggers "explosion" — each skill in its own file, per `rules_path_for`.
+        // Per-file validation (stat_core::config::parse_skills) rejects firebolt.toml
+        // in isolation since "explosion" isn't defined in that same file/batch; the
+        // old single-file-at-a-time scan then dropped firebolt silently.
+        let root = TempRoot::new("cross_file_trigger");
+
+        let explosion = Skill {
+            id: "explosion".into(),
+            name: "Explosion".into(),
+            ..Default::default()
+        };
+        write_single_skill_file(root.path(), &explosion);
+
+        let mut firebolt = Skill {
+            id: "firebolt".into(),
+            name: "Firebolt".into(),
+            ..Default::default()
+        };
+        firebolt.conditions = vec![stat_core::SkillCondition {
+            trigger_skill: "explosion".into(),
+            ..Default::default()
+        }];
+        write_single_skill_file(root.path(), &firebolt);
+
+        let skills = scan_content_root(root.path());
+
+        assert!(skills.contains_key("explosion"), "explosion must be scanned");
+        assert!(
+            skills.contains_key("firebolt"),
+            "firebolt must survive the scan even though its trigger reference is in a sibling file"
+        );
+        assert_eq!(
+            skills["firebolt"].rules.conditions[0].trigger_skill,
+            "explosion"
+        );
+    }
+
+    #[test]
+    fn dangling_trigger_reference_still_scans_but_warns() {
+        // A genuinely dangling reference (no skill named "nonexistent" anywhere in
+        // the root) must NOT cause the referencing skill to be dropped — that would
+        // just be a batch-level version of the same silent-drop bug. Task 8's
+        // ValidationRegistry is where this becomes a user-facing error.
+        let root = TempRoot::new("dangling_trigger");
+
+        let mut haunted = Skill {
+            id: "haunted".into(),
+            name: "Haunted".into(),
+            ..Default::default()
+        };
+        haunted.conditions = vec![stat_core::SkillCondition {
+            trigger_skill: "nonexistent".into(),
+            ..Default::default()
+        }];
+        write_single_skill_file(root.path(), &haunted);
+
+        let skills = scan_content_root(root.path());
+
+        assert!(
+            skills.contains_key("haunted"),
+            "a dangling trigger_skill reference must warn, not silently drop the skill"
+        );
     }
 }

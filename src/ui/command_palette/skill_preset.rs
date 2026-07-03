@@ -26,6 +26,13 @@ enum SkillRow {
 struct SkillItem {
     label: String,
     row: SkillRow,
+    /// `false` for "New Skill" rows when `SkillLibrary::roots` is empty — there's
+    /// nowhere to write the new skill's files. Mirrors the panel's own empty-state
+    /// hint (`skill::mod` — "Call RegisterObeliskContentExt::register_obelisk_content
+    /// (root)..."); `insert_new_skill` refuses a fabricated write root, so the row
+    /// must refuse to be selected in the first place rather than silently no-op.
+    enabled: bool,
+    suffix: Option<&'static str>,
 }
 
 impl PaletteItem for SkillItem {
@@ -43,6 +50,14 @@ impl PaletteItem for SkillItem {
             SkillRow::Rescan => Some(colors::ACCENT_ORANGE),
             SkillRow::Existing(_) => None,
         }
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn suffix(&self) -> Option<&str> {
+        self.suffix
     }
 }
 
@@ -82,16 +97,26 @@ fn draw_skill_preset_palette(
         state.just_opened,
     );
 
+    // No content root registered ⇒ there's nowhere to write a new skill's files.
+    // Disable "New Skill" rows rather than let them fall through to a fabricated
+    // write root — mirrors the panel's own empty-state hint.
+    let has_root = library.default_root().is_some();
+    let no_root_hint = "no content root — call register_obelisk_content()";
+
     let mut items: Vec<SkillItem> = SkillArchetype::ALL
         .into_iter()
         .map(|archetype| SkillItem {
             label: format!("+ New Skill ({})", archetype.label()),
             row: SkillRow::NewSkill(archetype),
+            enabled: has_root,
+            suffix: if has_root { None } else { Some(no_root_hint) },
         })
         .collect();
     items.push(SkillItem {
         label: "Rescan content roots".to_string(),
         row: SkillRow::Rescan,
+        enabled: true,
+        suffix: None,
     });
 
     let mut ids: Vec<String> = library.skills.keys().cloned().collect();
@@ -99,6 +124,8 @@ fn draw_skill_preset_palette(
     items.extend(ids.into_iter().map(|id| SkillItem {
         label: id.clone(),
         row: SkillRow::Existing(id),
+        enabled: true,
+        suffix: None,
     }));
 
     let config = PaletteConfig {
@@ -136,12 +163,18 @@ fn draw_skill_preset_palette(
                         let (mut rules, mut timeline) = archetype.build(&id);
                         rules.id = id.clone();
                         timeline.skill_id = id.clone();
-                        let write_root = library
-                            .default_root()
-                            .map(PathBuf::from)
-                            .unwrap_or_else(|| PathBuf::from("."));
-                        insert_new_skill(&mut library, rules, timeline, &write_root);
-                        library.open = Some(id);
+                        // `default_root()` is `None` when no content root is
+                        // registered — `insert_new_skill` refuses to fabricate a
+                        // fallback in that case. The palette row is disabled
+                        // whenever `has_root` is false (see `draw_skill_preset_palette`),
+                        // so reaching here with `None` shouldn't happen; still, don't
+                        // silently no-op — `library.open` only advances on success.
+                        let write_root = library.default_root().map(PathBuf::from);
+                        if let Some(new_id) =
+                            insert_new_skill(&mut library, rules, timeline, write_root.as_deref())
+                        {
+                            library.open = Some(new_id);
+                        }
                     });
                 }
                 SkillRow::Rescan => {
