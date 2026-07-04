@@ -43,20 +43,26 @@
 //!   schema-relevant (`CueEvent::position_from` is unchanged from v1's beam handling), now driven
 //!   by the single resolved `effect` name rather than a dedicated `beam` lane.
 //!
-//! Every spawned cosmetic is `GameEntity`-tagged (despawned on Reset) and `PreviewCosmetic`
-//! (tests/tracing).
+//! Every spawned cosmetic is `PreviewCosmetic`-tagged (tests/tracing) — deliberately NOT
+//! `GameEntity` (Finding 2, Task 10 review): the generic `ResetCommand` (`editor::game`)
+//! synchronously `world.despawn()`s every `GameEntity` BEFORE firing `GameResetEvent`, which would
+//! hard-despawn a cosmetic mid-flight (a live `VfxSystem`, grace 0) and bypass the two-render-
+//! frame grace ladder below — this exact panic class (a `bevy_vfx`/`bevy_effect` command queued
+//! against an already-despawned entity) has recurred 3x in the sim's history. `reset_stage_on_reset`
+//! (`stage.rs`'s own `GameResetEvent` handler) instead expires cosmetics IN PLACE, letting
+//! [`reap_preview_cosmetics`] retire them through the same safe ladder every other expiry uses.
 
 use std::collections::HashSet;
 
 use bevy::prelude::*;
 
-use bevy_editor_game::GameEntity;
 use bevy_vfx::VfxLibrary;
 
 use obelisk_bevy::assets::{CastTimeline, CueAttach, CueParam, ParamSource, VolumeMotion};
 use obelisk_bevy::prelude::{charge_mult, ActiveCast};
 use obelisk_bevy::events::{CueEvent, CueKind};
 
+use crate::editor::EditorMode;
 use crate::effects::{cleanup_effect, EffectLibrary, EffectPlayback, PlaybackState};
 use crate::skill::library::SkillLibrary;
 
@@ -67,8 +73,10 @@ use super::stage::{PreviewCastSkill, PreviewCaster};
 /// comment), so every spawned cue cosmetic gets this single default.
 const DEFAULT_COSMETIC_LIFETIME: f32 = 1.5;
 
-/// Marks a spawned preview cosmetic (particle/effect stand-in) — `GameEntity`-tagged so Reset
-/// despawns it; queried by tests to prove a cue rendered its lanes.
+/// Marks a spawned preview cosmetic (particle/effect stand-in) — NOT `GameEntity` (see the module
+/// doc comment); a Reset expires it in place via [`CosmeticLifetime`] instead of despawning it
+/// directly. Also queried by tests to prove a cue rendered its lanes, and by `stage::despawn_stage`
+/// (`OnExit(EditorMode::Skill)`) to expire any straggler left alive when the stage tears down.
 #[derive(Component)]
 pub struct PreviewCosmetic;
 
@@ -326,7 +334,6 @@ fn spawn_cue_effect(
         Transform::from_translation(translation),
         Visibility::default(),
         PreviewCosmetic,
-        GameEntity,
         CosmeticLifetime {
             elapsed: 0.0,
             duration: DEFAULT_COSMETIC_LIFETIME,
@@ -362,12 +369,32 @@ fn spawn_cue_effect(
 
 /// Wires the preview cosmetics: the cue observer + the age/fly (sim-time, `FixedUpdate`) and reap
 /// (render-time, `Update`) systems.
+///
+/// `age_preview_cosmetics`/`fly_preview_cosmetics` are scoped to `EditorMode::Skill` (Finding 1,
+/// Task 10 review) — a cosmetic is only ever created by a cast on the stage, which cannot happen
+/// outside Skill mode (the sim that fires `CueEvent`s is gated too — see `stage::add_obelisk_sim`).
+/// `on_preview_cue` (the observer) needs no explicit gate: it only fires in reaction to a
+/// `CueEvent`, which that same gated sim is the only source of.
+///
+/// `reap_preview_cosmetics` is deliberately left UN-gated. `stage::despawn_stage`
+/// (`OnExit(EditorMode::Skill)`) force-expires (never despawns) any cosmetic still alive when the
+/// stage tears down, exactly like a normal `reset_stage` expiry — relying on THIS system to still
+/// be running afterward to actually walk the two-render-frame grace ladder and finish the
+/// despawn. Gating it too would strand a mid-flight cosmetic forever with a live driver
+/// component: either a permanently-playing (and now un-despawnable) piece of VFX clutter outside
+/// Skill mode, or — if `despawn_stage` hard-despawned instead of expiring — the exact bevy_vfx
+/// dead-entity-command panic Finding 2 just closed off via a different path. The query here is
+/// empty (and therefore cheap) whenever no cosmetic exists, which is always true outside a live
+/// Skill-mode cast.
 pub struct PreviewCosmeticsPlugin;
 
 impl Plugin for PreviewCosmeticsPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(on_preview_cue)
-            .add_systems(FixedUpdate, (age_preview_cosmetics, fly_preview_cosmetics))
+            .add_systems(
+                FixedUpdate,
+                (age_preview_cosmetics, fly_preview_cosmetics).run_if(in_state(EditorMode::Skill)),
+            )
             .add_systems(Update, reap_preview_cosmetics);
     }
 }

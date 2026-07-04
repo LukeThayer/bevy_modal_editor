@@ -40,10 +40,10 @@ use obelisk_bevy::spatial::filter::passes_filter;
 
 use bevy_editor_game::{GameCamera, GameResetEvent, GameStartedEvent, GameState};
 
-use crate::editor::EditorCamera;
+use crate::editor::{EditorCamera, EditorMode};
 use crate::skill::library::{SkillEntry, SkillLibrary};
 
-use super::cosmetics::CosmeticLifetime;
+use super::cosmetics::{CosmeticLifetime, PreviewCosmetic};
 
 // ---------------------------------------------------------------------------
 // Tuning constants (ported from arena_sim::tuning — byte-identical values; the preview stage
@@ -80,6 +80,12 @@ pub struct PreviewCaster;
 #[derive(Component)]
 pub struct PreviewDummy;
 
+/// Marks the persistent stage floor — both the physics collider entity and (when windowed) its
+/// visual mesh entity. Queried by [`despawn_stage`] (`OnExit(EditorMode::Skill)`, Finding 1, Task
+/// 10 review) and by tests asserting the stage doesn't leak outside a Skill-mode session.
+#[derive(Component)]
+pub struct PreviewStageFloor;
+
 /// Marks a persistent stage combatant's home position (heal/reposition target on reset).
 #[derive(Component)]
 pub struct StagePost(pub Vec3);
@@ -92,6 +98,7 @@ pub fn spawn_arena_floor(commands: &mut Commands) {
     const FLOOR_THICKNESS: f32 = 1.0;
     commands.spawn((
         Name::new("PreviewStageFloor"),
+        PreviewStageFloor,
         RigidBody::Static,
         Collider::cuboid(FLOOR_SIZE, FLOOR_THICKNESS, FLOOR_SIZE),
         Position(Vec3::new(0.0, -FLOOR_THICKNESS / 2.0, 0.0)),
@@ -288,6 +295,7 @@ impl Plugin for PreviewSimPlugin {
             Update,
             sync_sim_registries
                 .run_if(resource_exists::<SkillLibrary>)
+                .run_if(in_state(EditorMode::Skill))
                 .before(ensure_stage),
         );
     }
@@ -307,6 +315,12 @@ fn add_obelisk_sim(app: &mut App) {
         .add_plugins(vfx::ObeliskCuePlugin)
         .add_plugins(loot::ObeliskLootPlugin);
 
+    // Finding 1 (Task 10 review): gating the SETS (not just the systems this fn explicitly adds
+    // below) means every system anyone assigns `.in_set(ObeliskSet::_)` — including
+    // `ObeliskCorePlugin`'s own `tick_effects_system`/`tick_cooldowns` (`.in_set(TickEffects)`,
+    // added by a different plugin, added above via `add_obelisk_sim`'s own `add_plugins` calls) —
+    // is skipped outside Skill mode too, with no need to chase every current and future obelisk-
+    // bevy internal system individually.
     app.configure_sets(
         FixedUpdate,
         (
@@ -316,7 +330,8 @@ fn add_obelisk_sim(app: &mut App) {
             ObeliskSet::ResolveHits,
             ObeliskSet::TickEffects,
         )
-            .chain(),
+            .chain()
+            .run_if(in_state(EditorMode::Skill)),
     );
 
     app.add_observer(timeline::advance::on_hitbox_world_hit);
@@ -349,17 +364,22 @@ fn add_obelisk_sim(app: &mut App) {
         ),
     );
 
+    // `.before`/`.after` are plain ordering constraints, not set membership, so these two don't
+    // inherit the `ObeliskSet` gate above automatically — gated explicitly (Finding 1).
     app.add_systems(
         FixedUpdate,
-        refresh_spatial_pipeline.before(ObeliskSet::Validate),
+        refresh_spatial_pipeline
+            .before(ObeliskSet::Validate)
+            .run_if(in_state(EditorMode::Skill)),
     );
     app.add_systems(
         FixedUpdate,
         refresh_spatial_pipeline_pre_detect
             .after(ObeliskSet::Projectiles)
-            .before(ObeliskSet::ResolveHits),
+            .before(ObeliskSet::ResolveHits)
+            .run_if(in_state(EditorMode::Skill)),
     );
-    app.add_systems(Update, refresh_spatial_pipeline);
+    app.add_systems(Update, refresh_spatial_pipeline.run_if(in_state(EditorMode::Skill)));
 }
 
 /// The v2 translation of v1's `derive_vfx_cues`: obelisk's cue-firing systems (`vfx.rs`) decide
@@ -412,7 +432,15 @@ impl Plugin for PreviewControllerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Playhead>()
             .init_resource::<PreviewCastSkill>()
-            .add_systems(Startup, spawn_preview_floor)
+            // Finding 1 (Task 10 review): the stage is scoped to `EditorMode::Skill` — a fresh
+            // stage spawns on every entry, torn down on exit, mirroring `MeshModelPlugin`'s
+            // pre-existing `OnEnter`/`OnExit(EditorMode::Blockout)` precedent (`src/modeling/
+            // mod.rs`). Un-gated, the stage's floor/caster/dummy colliders and sim ticked in
+            // EVERY editor mode: dead-zone click-selection near the origin, contaminated
+            // Insert-mode placement raycasts, permanent visual clutter, and unconditional
+            // physics/sim cost outside Skill mode.
+            .add_systems(OnEnter(EditorMode::Skill), spawn_preview_floor)
+            .add_systems(OnExit(EditorMode::Skill), despawn_stage)
             .add_systems(
                 Update,
                 (
@@ -423,14 +451,17 @@ impl Plugin for PreviewControllerPlugin {
                     sync_playhead,
                     clear_playhead_on_reset,
                     keep_editor_camera_during_play,
-                ),
+                )
+                    .run_if(in_state(EditorMode::Skill)),
             );
     }
 }
 
-/// Spawn the persistent stage floor (not `GameEntity` — survives Reset). Windowed, it also gets a
-/// visible slab matching the collider; headless test apps have no `StandardMaterial` assets and
-/// skip it.
+/// Spawn the stage floor: `OnEnter(EditorMode::Skill)` (Finding 1, Task 10 review — a fresh stage
+/// on every Skill-mode entry, torn down on exit by [`despawn_stage`]; not `GameEntity`, so a Reset
+/// WITHIN a Skill-mode session heals it in place instead — see `reset_stage_on_reset`). Windowed,
+/// it also gets a visible slab matching the collider; headless test apps have no
+/// `StandardMaterial` assets and skip it.
 pub fn spawn_preview_floor(
     mut commands: Commands,
     meshes: Option<ResMut<Assets<Mesh>>>,
@@ -440,6 +471,7 @@ pub fn spawn_preview_floor(
     if let (Some(mut meshes), Some(mut materials)) = (meshes, materials) {
         commands.spawn((
             Name::new("PreviewFloorVisual"),
+            PreviewStageFloor,
             Mesh3d(meshes.add(Cuboid::new(40.0, 1.0, 40.0))),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::srgb(0.25, 0.25, 0.28),
@@ -485,10 +517,11 @@ fn ground_marker() -> Vec3 {
     SPAWN_MARKERS[1]
 }
 
-/// The PERSISTENT STAGE (UX spec P3): the caster + dummies exist the whole session, visible while
-/// editing — synced to the CURRENTLY OPEN skill (`library.open`; `None` is a legal idle state —
-/// defaults to a single dummy). NOT `GameEntity`: the editor's Reset heals/repositions instead of
-/// despawning (see `reset_stage_on_reset`).
+/// The PERSISTENT STAGE (UX spec P3): the caster + dummies exist for the whole Skill-mode session
+/// (spawned `OnEnter(EditorMode::Skill)`, torn down `OnExit` by [`despawn_stage`] — Finding 1,
+/// Task 10 review), visible while editing — synced to the CURRENTLY OPEN skill (`library.open`;
+/// `None` is a legal idle state — defaults to a single dummy). NOT `GameEntity`: a Reset WITHIN a
+/// Skill-mode session heals/repositions instead of despawning (see `reset_stage_on_reset`).
 pub fn ensure_stage(
     library: Res<SkillLibrary>,
     casters: Query<(), With<PreviewCaster>>,
@@ -551,6 +584,36 @@ pub fn ensure_stage(
         if i >= layout.len() {
             commands.entity(e).despawn();
         }
+    }
+}
+
+/// `OnExit(EditorMode::Skill)` (Finding 1, Task 10 review): tear down the whole stage. Hard-
+/// despawns the floor (collider + visual), the caster, every dummy, and any in-flight [`Hitbox`]
+/// (a live projectile at the moment of a mode switch) — all pure physics/logic entities with no
+/// `bevy_vfx`/`bevy_effect` driver, so an immediate despawn is exactly what `reset_stage` already
+/// does to hitboxes on every ordinary Reset (see [`PreviewStageReset::reset_stage`]) and carries
+/// no grace-ladder risk.
+///
+/// A live [`PreviewCosmetic`] is handled differently: it's EXPIRED in place (`life.elapsed =
+/// life.duration`, the same idiom `reset_stage` uses), never hard-despawned here. A cosmetic can
+/// carry a live `VfxSystem`/`EffectPlayback` driver — hard-despawning it synchronously is exactly
+/// the bevy_vfx dead-entity-command panic class Finding 2 just fixed a different path into (the
+/// generic `ResetCommand`'s `GameEntity` despawn pass); this system must not reopen it via a
+/// second path. `cosmetics::reap_preview_cosmetics` is deliberately left un-gated by `EditorMode`
+/// (see that plugin's own doc comment) specifically so it can still walk an expired cosmetic
+/// through its two-render-frame grace ladder after the stage — and the mode — that spawned it is
+/// already gone.
+#[allow(clippy::type_complexity)]
+pub fn despawn_stage(
+    mut commands: Commands,
+    stage: Query<Entity, Or<(With<PreviewStageFloor>, With<PreviewCaster>, With<PreviewDummy>, With<Hitbox>)>>,
+    mut cosmetics: Query<&mut CosmeticLifetime, With<PreviewCosmetic>>,
+) {
+    for e in &stage {
+        commands.entity(e).despawn();
+    }
+    for mut life in &mut cosmetics {
+        life.elapsed = life.duration;
     }
 }
 

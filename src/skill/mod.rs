@@ -484,6 +484,7 @@ fn skill_probe(
     mut scroll_hint: ResMut<SkillPanelScrollHint>,
     mut game_started: MessageWriter<bevy_editor_game::GameStartedEvent>,
     mut next_game_state: ResMut<NextState<bevy_editor_game::GameState>>,
+    mut editor_state: ResMut<EditorState>,
 ) {
     if !std::env::args().any(|arg| arg == "--skill-probe") {
         return;
@@ -639,14 +640,20 @@ fn skill_probe(
             next_game_state.set(bevy_editor_game::GameState::Playing);
             game_started.write(bevy_editor_game::GameStartedEvent);
         }
-        // Drop to View mode so the Skill panel (which occupies the right half of the window)
-        // doesn't obscure the dummy standing at +X — none of the preview stage's systems are
-        // gated on `EditorMode` (deliberately: the stage is a persistent, session-long fixture,
-        // not a Skill-mode-exclusive one), so Play keeps running exactly the same underneath.
-        325 => next_mode.set(EditorMode::View),
+        // Hide the UI (mirrors what the real `PlayCommand` does — `editor::game.rs` — on an
+        // ordinary Play; this probe bypasses `PlayCommand` itself, see frame 320's own comment,
+        // so it has to flip the same flag by hand) so the Skill panel — which occupies the right
+        // half of the window and would otherwise obscure the dummy standing at +X — stops
+        // drawing, WITHOUT leaving Skill mode. Task 10 review, Finding 1: the stage is now
+        // scoped to `EditorMode::Skill` (spawned `OnEnter`, torn down `OnExit`), so switching to
+        // View here — as this probe used to — would tear the whole duel down mid-cast instead of
+        // just hiding a panel. Staying in Skill mode keeps the stage (and the sim ticking it)
+        // exactly as live as an ordinary Play would.
+        325 => editor_state.ui_enabled = false,
         // Two viewport screenshots straddling the cast's flight (windup 0.2s + ~0.3s to cross
         // the 8 m duel at the projectile template's 25 u/s — real-time frames, not fixed sim
-        // ticks, so these are generous estimates, not an exact tick count).
+        // ticks, so these are generous estimates, not an exact tick count). Both taken while
+        // still in Skill mode (see frame 325) — the stage must still be rendering/ticking here.
         335 => {
             commands
                 .spawn(Screenshot::primary_window())
@@ -657,7 +664,17 @@ fn skill_probe(
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk("/tmp/skill_mode_probe_play.png"));
         }
-        400 => {
+        // Task 10 review, Finding 1 (new): NOW leave Skill mode, well after the cast screenshots
+        // above — demonstrating the other half of the mode-gate: the stage must be ABSENT (no
+        // caster/dummy/floor, no cast in flight) once outside Skill mode, instead of the old
+        // "persistent regardless of mode" behavior.
+        375 => next_mode.set(EditorMode::View),
+        385 => {
+            commands
+                .spawn(Screenshot::primary_window())
+                .observe(save_to_disk("/tmp/skill_mode_probe_view_no_stage.png"));
+        }
+        410 => {
             exit.write(AppExit::Success);
         }
         _ => {}

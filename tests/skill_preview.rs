@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
-use bevy_editor_game::{AnimationLibrary, GameResetEvent, GameStartedEvent, GameState};
+use bevy_editor_game::{AnimationLibrary, GameEntity, GameResetEvent, GameStartedEvent, GameState};
 use bevy_vfx::VfxLibrary;
 
 use obelisk_bevy::assets::{
@@ -24,10 +24,14 @@ use obelisk_bevy::assets::{
 use obelisk_bevy::testkit::{EventRecorder, EventRecorderPlugin};
 use stat_core::{BaseDamage, DamageConfig, Delivery, Skill, SkillCondition};
 
-use bevy_modal_editor::effects::EffectLibrary;
+use bevy_modal_editor::editor::EditorMode;
+use bevy_modal_editor::effects::{data::EffectMarker, EffectLibrary};
 use bevy_modal_editor::skill::library::{SkillEntry, SkillLibrary};
 use bevy_modal_editor::skill::preview::{
-    stage::{PreviewCaster, PreviewDummy, PreviewSimPlugin, PreviewControllerPlugin, SPAWN_MARKERS},
+    stage::{
+        PreviewCaster, PreviewDummy, PreviewSimPlugin, PreviewControllerPlugin, PreviewStageFloor,
+        SPAWN_MARKERS,
+    },
     rig::PreviewRigPlugin,
     cosmetics::{PreviewCosmetic, PreviewCosmeticsPlugin},
     sockets::{index_rig_sockets, RigSockets},
@@ -46,6 +50,7 @@ fn test_app() -> App {
         .add_plugins(bevy::state::app::StatesPlugin)
         .add_plugins(EventRecorderPlugin)
         .init_state::<GameState>()
+        .init_state::<EditorMode>()
         .add_message::<GameStartedEvent>()
         .add_message::<GameResetEvent>()
         .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
@@ -73,6 +78,16 @@ fn test_app() -> App {
     app.finish();
     app.cleanup();
     app
+}
+
+/// Drive `EditorMode` into `Skill` and let the transition apply (Finding 1, Task 10 review): the
+/// preview stage now spawns on `OnEnter(EditorMode::Skill)` and its systems are gated
+/// `run_if(in_state(EditorMode::Skill))` (mirroring `MeshModelPlugin`'s pre-existing `Blockout`
+/// precedent — see `src/modeling/mod.rs`), so every test that exercises the stage must explicitly
+/// enter Skill mode first. `test_app()` defaults to `View`, same as the real editor.
+fn enter_skill_mode(app: &mut App) {
+    app.world_mut().resource_mut::<NextState<EditorMode>>().set(EditorMode::Skill);
+    app.update();
 }
 
 /// Insert a skill directly into `SkillLibrary` (bypassing disk — these are in-memory fixtures,
@@ -110,6 +125,7 @@ fn play(app: &mut App, ticks: usize) {
 #[test]
 fn play_resolves_damage_on_the_dummy() {
     let mut app = test_app();
+    enter_skill_mode(&mut app);
     let (rules, timeline) = SkillArchetype::Projectile.build("bolt");
     insert_skill(&mut app, "bolt", rules, timeline);
     open_skill(&mut app, "bolt");
@@ -137,6 +153,7 @@ fn play_resolves_damage_on_the_dummy() {
 #[test]
 fn stage_is_persistent_before_any_play() {
     let mut app = test_app();
+    enter_skill_mode(&mut app);
     app.update();
     app.update();
     let casters = app
@@ -161,6 +178,7 @@ fn stage_is_persistent_before_any_play() {
 #[test]
 fn groundpoint_zone_spawns_above_the_aim_marker_and_hits_the_dummy() {
     let mut app = test_app();
+    enter_skill_mode(&mut app);
     let (rules, timeline) = SkillArchetype::Zone.build("storm");
     assert!(
         matches!(timeline.acquisition, Acquisition::GroundPoint { .. }),
@@ -305,6 +323,7 @@ fn fireball_explosion_rules() -> Skill {
 #[test]
 fn fireball_pair_composes_the_sub_cast_in_preview() {
     let mut app = test_app();
+    enter_skill_mode(&mut app);
     insert_skill(&mut app, "fireball", fireball_rules(), fireball_timeline());
     insert_skill(
         &mut app,
@@ -352,6 +371,7 @@ fn fireball_pair_composes_the_sub_cast_in_preview() {
 fn fireball_pair_is_deterministic() {
     let total = || {
         let mut app = test_app();
+        enter_skill_mode(&mut app);
         insert_skill(&mut app, "fireball", fireball_rules(), fireball_timeline());
         insert_skill(
             &mut app,
@@ -384,6 +404,7 @@ fn fireball_pair_is_deterministic() {
 #[test]
 fn cue_bound_to_a_vfx_preset_spawns_a_preview_cosmetic() {
     let mut app = test_app();
+    enter_skill_mode(&mut app);
     app.world_mut()
         .resource_mut::<VfxLibrary>()
         .effects
@@ -414,4 +435,314 @@ fn cue_bound_to_a_vfx_preset_spawns_a_preview_cosmetic() {
         .iter(app.world())
         .count();
     assert!(cosmetics > 0, "the on_cast cue should have spawned at least one PreviewCosmetic");
+}
+
+// ---------------------------------------------------------------------------
+// Finding 1 (Task 10 review): the stage is scoped to `EditorMode::Skill` — it must not exist (or
+// tick) in any other mode, mirroring `MeshModelPlugin`'s `OnEnter`/`OnExit(EditorMode::Blockout)`
+// precedent (`src/modeling/mod.rs`). A general-purpose editor session that never enters Skill
+// mode must never pay for (or collide with) the preview stage.
+// ---------------------------------------------------------------------------
+
+/// (caster count, dummy count, floor-entity count) — `PreviewStageFloor` is on both the collider
+/// entity and (when windowed) its visual sibling, but this headless harness has no
+/// `StandardMaterial` assets, so exactly one floor entity is expected here.
+fn stage_entity_counts(app: &mut App) -> (usize, usize, usize) {
+    let casters = app.world_mut().query_filtered::<Entity, With<PreviewCaster>>().iter(app.world()).count();
+    let dummies = app.world_mut().query_filtered::<Entity, With<PreviewDummy>>().iter(app.world()).count();
+    let floors = app.world_mut().query_filtered::<Entity, With<PreviewStageFloor>>().iter(app.world()).count();
+    (casters, dummies, floors)
+}
+
+#[test]
+fn stage_only_exists_while_in_skill_mode() {
+    let mut app = test_app();
+    // Default mode is View (same as the real editor) — the stage must not exist yet.
+    app.update();
+    app.update();
+    assert_eq!(
+        stage_entity_counts(&mut app),
+        (0, 0, 0),
+        "no stage entities should exist before Skill mode is ever entered"
+    );
+
+    enter_skill_mode(&mut app);
+    app.update();
+    assert_eq!(
+        stage_entity_counts(&mut app),
+        (1, 1, 1),
+        "entering Skill mode should spawn the caster, the default dummy, and the floor"
+    );
+
+    app.world_mut().resource_mut::<NextState<EditorMode>>().set(EditorMode::View);
+    app.update();
+    assert_eq!(
+        stage_entity_counts(&mut app),
+        (0, 0, 0),
+        "leaving Skill mode should despawn the whole stage"
+    );
+}
+
+/// Empirical proof that the obelisk `FixedUpdate` sim itself doesn't tick outside Skill mode
+/// (not just that the stage entities are absent) — the same fixture as
+/// `play_resolves_damage_on_the_dummy`, but never entering Skill mode at all.
+#[test]
+fn sim_does_not_advance_outside_skill_mode() {
+    let mut app = test_app();
+    // Deliberately stay in the default View mode.
+    let (rules, timeline) = SkillArchetype::Projectile.build("inert");
+    insert_skill(&mut app, "inert", rules, timeline);
+    open_skill(&mut app, "inert");
+    app.update();
+    app.update();
+
+    play(&mut app, 90);
+
+    let rec = app.world().resource::<EventRecorder>();
+    assert!(rec.cast_began.is_empty(), "no cast should begin outside Skill mode (no caster even exists)");
+    assert!(rec.damage_resolved.is_empty(), "the obelisk sim must not resolve damage outside Skill mode");
+}
+
+// ---------------------------------------------------------------------------
+// Finding 2 (Task 10 review): preview cosmetics must NOT be `GameEntity`-tagged — the generic
+// `ResetCommand` (`editor::game`) despawns every `GameEntity` synchronously, BEFORE firing
+// `GameResetEvent`, which would hard-despawn a cosmetic mid-flight (live `VfxSystem`, grace 0)
+// and bypass the two-render-frame grace ladder `bevy_vfx` needs (this exact panic class has
+// recurred 3x in the sim's history). `reset_stage_on_reset` (this crate's own `GameResetEvent`
+// handler) instead expires cosmetics in place, letting `reap_preview_cosmetics` retire them
+// safely over the next couple of render frames.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn preview_cosmetics_are_not_game_entity_tagged() {
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    app.world_mut()
+        .resource_mut::<VfxLibrary>()
+        .effects
+        .insert("Test Muzzle Reset".to_string(), bevy_vfx::VfxSystem::default());
+
+    let (mut rules, mut timeline) = SkillArchetype::Projectile.build("zap_reset");
+    rules.id = "zap_reset".to_string();
+    timeline.skill_id = "zap_reset".to_string();
+    timeline.cues.insert(
+        "on_cast".to_string(),
+        obelisk_bevy::assets::CueBinding {
+            effect: Some("Test Muzzle Reset".to_string()),
+            attach: obelisk_bevy::assets::CueAttach::World,
+            anim: None,
+            params: Vec::new(),
+        },
+    );
+    insert_skill(&mut app, "zap_reset", rules, timeline);
+    open_skill(&mut app, "zap_reset");
+    app.update();
+    app.update();
+
+    play(&mut app, 10);
+
+    let cosmetics: Vec<Entity> = app
+        .world_mut()
+        .query_filtered::<Entity, With<PreviewCosmetic>>()
+        .iter(app.world())
+        .collect();
+    assert!(!cosmetics.is_empty(), "the on_cast cue should have spawned a cosmetic");
+    for e in &cosmetics {
+        assert!(
+            app.world().get::<GameEntity>(*e).is_none(),
+            "a preview cosmetic must NOT be GameEntity-tagged — the generic Reset's synchronous \
+             despawn pass would bypass the grace ladder and reintroduce the bevy_vfx dead-entity \
+             panic class (Finding 2, Task 10 review)"
+        );
+        assert!(
+            app.world().get::<bevy_vfx::VfxSystem>(*e).is_some(),
+            "sanity: this cosmetic should carry a live VfxSystem (grace 0) — exactly the state \
+             that used to be hazardous to hard-despawn"
+        );
+    }
+}
+
+#[test]
+fn game_reset_event_expires_cosmetics_via_the_ladder_not_a_hard_despawn() {
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    app.world_mut()
+        .resource_mut::<VfxLibrary>()
+        .effects
+        .insert("Test Muzzle Reset 2".to_string(), bevy_vfx::VfxSystem::default());
+
+    let (mut rules, mut timeline) = SkillArchetype::Projectile.build("zap_reset2");
+    rules.id = "zap_reset2".to_string();
+    timeline.skill_id = "zap_reset2".to_string();
+    timeline.cues.insert(
+        "on_cast".to_string(),
+        obelisk_bevy::assets::CueBinding {
+            effect: Some("Test Muzzle Reset 2".to_string()),
+            attach: obelisk_bevy::assets::CueAttach::World,
+            anim: None,
+            params: Vec::new(),
+        },
+    );
+    insert_skill(&mut app, "zap_reset2", rules, timeline);
+    open_skill(&mut app, "zap_reset2");
+    app.update();
+    app.update();
+
+    play(&mut app, 10);
+
+    let cosmetic = app
+        .world_mut()
+        .query_filtered::<Entity, With<PreviewCosmetic>>()
+        .iter(app.world())
+        .next()
+        .expect("the on_cast cue should have spawned a cosmetic");
+    assert!(
+        app.world().get::<bevy_vfx::VfxSystem>(cosmetic).is_some(),
+        "sanity: the cosmetic should still carry its live VfxSystem before reset"
+    );
+
+    // Mirrors `ResetCommand::apply`'s tail call — the private `ResetCommand` type itself lives in
+    // the host editor crate's `editor::game` module, out of this preview-only harness's reach,
+    // but `reset_stage_on_reset` is exactly what it drives.
+    app.world_mut().write_message(GameResetEvent);
+    // Two frames: `reset_stage_on_reset` and `reap_preview_cosmetics` are both plain `Update`
+    // systems with no ordering constraint between them, so the expiry may or may not be visible
+    // to reap on the very same frame it's set — two updates guarantee reap has run at least once
+    // AFTER the expiry, regardless of intra-frame ordering.
+    app.update();
+    app.update();
+    assert!(
+        app.world().get_entity(cosmetic).is_ok(),
+        "the cosmetic must still exist just after reset — expired in place, not hard-despawned \
+         (a hard despawn here is exactly the panic this test guards against)"
+    );
+    assert!(
+        app.world().get::<bevy_vfx::VfxSystem>(cosmetic).is_none(),
+        "the reap ladder's grace-0 step should have removed the VfxSystem driver by now"
+    );
+
+    // Two more render frames complete the grace ladder (grace 1 -> 2 -> despawn).
+    app.update();
+    app.update();
+    assert!(
+        app.world().get_entity(cosmetic).is_err(),
+        "the cosmetic should be despawned once the two-render-frame grace ladder completes"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Finding 3 (Task 10 review): cue effect-name resolution order (`EffectLibrary` first, then
+// `VfxLibrary`) and unresolvable-name safety.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cue_name_in_both_libraries_resolves_to_the_effect_library_entry() {
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    const DUP_NAME: &str = "Duplicate Preset Name";
+    app.world_mut()
+        .resource_mut::<EffectLibrary>()
+        .effects
+        .insert(DUP_NAME.to_string(), EffectMarker::default());
+    app.world_mut()
+        .resource_mut::<VfxLibrary>()
+        .effects
+        .insert(DUP_NAME.to_string(), bevy_vfx::VfxSystem::default());
+
+    let (mut rules, mut timeline) = SkillArchetype::Projectile.build("dupname");
+    rules.id = "dupname".to_string();
+    timeline.skill_id = "dupname".to_string();
+    timeline.cues.insert(
+        "on_cast".to_string(),
+        obelisk_bevy::assets::CueBinding {
+            effect: Some(DUP_NAME.to_string()),
+            attach: obelisk_bevy::assets::CueAttach::World,
+            anim: None,
+            params: Vec::new(),
+        },
+    );
+    insert_skill(&mut app, "dupname", rules, timeline);
+    open_skill(&mut app, "dupname");
+    app.update();
+    app.update();
+
+    play(&mut app, 10);
+
+    let cosmetic = app
+        .world_mut()
+        .query_filtered::<Entity, With<PreviewCosmetic>>()
+        .iter(app.world())
+        .next()
+        .expect("the on_cast cue should have spawned a cosmetic");
+    assert!(
+        app.world().get::<EffectMarker>(cosmetic).is_some(),
+        "a name present in both libraries must resolve to the EffectLibrary entry (canonical, \
+         EffectLibrary-first order)"
+    );
+    assert!(
+        app.world().get::<bevy_vfx::VfxSystem>(cosmetic).is_none(),
+        "must not ALSO carry the VfxLibrary system once EffectLibrary already resolved the name"
+    );
+}
+
+#[test]
+fn cue_name_in_neither_library_warns_and_spawns_nothing_no_panic() {
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+
+    let (mut rules, mut timeline) = SkillArchetype::Projectile.build("ghostcue");
+    rules.id = "ghostcue".to_string();
+    timeline.skill_id = "ghostcue".to_string();
+    // Two cues sharing the SAME unresolvable name — also exercises the once-per-name `warn!`
+    // dedup (`spawn_cue_effect`'s `warned: &mut HashSet<String>` — a double-warn isn't directly
+    // observable from outside the module, but a repeated lookup against the same missing name
+    // must still not panic or spawn anything on either cue).
+    timeline.cues.insert(
+        "on_cast".to_string(),
+        obelisk_bevy::assets::CueBinding {
+            effect: Some("Nonexistent Preset".to_string()),
+            attach: obelisk_bevy::assets::CueAttach::World,
+            anim: None,
+            params: Vec::new(),
+        },
+    );
+    timeline.cues.insert(
+        "on_hit".to_string(),
+        obelisk_bevy::assets::CueBinding {
+            effect: Some("Nonexistent Preset".to_string()),
+            attach: obelisk_bevy::assets::CueAttach::World,
+            anim: None,
+            params: Vec::new(),
+        },
+    );
+    insert_skill(&mut app, "ghostcue", rules, timeline);
+    open_skill(&mut app, "ghostcue");
+    app.update();
+    app.update();
+
+    // No panic across a full cast (including a resolved hit, which fires the on_hit cue too) —
+    // the crux of this test.
+    play(&mut app, 90);
+
+    // `spawn_cue_effect` always spawns the bookkeeping entity (`PreviewCosmetic` +
+    // `CosmeticLifetime` — needed unconditionally so `CueAttach::Follow`/beam-arc rendering has
+    // somewhere to attach regardless of resolution), but an unresolvable name must never attach
+    // a driver to it: neither an `EffectLibrary` marker nor a `VfxLibrary` system. This is
+    // finding 3's own "spawns nothing / a placeholder" framing — a placeholder with no driver is
+    // exactly as inert (renders nothing) as spawning no entity at all.
+    let cosmetics: Vec<Entity> = app
+        .world_mut()
+        .query_filtered::<Entity, With<PreviewCosmetic>>()
+        .iter(app.world())
+        .collect();
+    for e in cosmetics {
+        assert!(
+            app.world().get::<EffectMarker>(e).is_none(),
+            "an unresolvable name must never resolve an EffectLibrary marker"
+        );
+        assert!(
+            app.world().get::<bevy_vfx::VfxSystem>(e).is_none(),
+            "an unresolvable name must never resolve a VfxLibrary system"
+        );
+    }
 }
