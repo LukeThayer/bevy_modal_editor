@@ -434,12 +434,18 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
         }
     });
 
+    // Task 12 review (Fix 1): write-back-then-switch, extracted to `apply_skill_switch` (see its
+    // doc comment) so the ordering invariant it embodies is regression-tested instead of resting
+    // solely on these two operations' order inside this closure. `switch_to_skill` is only ever
+    // set inside the `(Some, Some)` match arm above, so it's always `None` here whenever
+    // `editing_entry` is — nothing is lost by only applying it alongside the write-back.
     if let (Some(id), Some(entry)) = (open_skill.clone(), editing_entry) {
-        world.resource_mut::<SkillLibrary>().skills.insert(id, entry);
+        let mut library = world.resource_mut::<SkillLibrary>();
+        apply_skill_switch(&mut library, entry, &id, switch_to_skill);
     }
 
     // Task 12: write back the chip-switch prompt + viewport-proxy window selection for the skill
-    // that was actually rendered THIS frame (`open_skill`, captured before any switch below).
+    // that was actually rendered THIS frame (`open_skill`, captured before any switch above).
     // Written unconditionally (even when unchanged, or `open_skill` is `None`) — a since-switched
     // `for_id` is exactly what the read-side snapshot (above `chip_prompt`/`selected_window`)
     // already treats as stale, so no extra "did it actually change" branch is needed here.
@@ -453,10 +459,8 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
         selection.for_id = open_skill.clone();
         selection.window = selected_window;
     }
-    if let Some(target) = switch_to_skill {
-        world.resource_mut::<SkillLibrary>().open = Some(target);
-    }
 
+    let mut save_succeeded = false;
     if let Some(result) = action_result {
         let mut save_state = world.resource_mut::<SkillSaveState>();
         save_state.for_id = open_skill;
@@ -464,6 +468,7 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
             Ok(()) => {
                 save_state.stale_prompt = None;
                 save_state.last_error = None;
+                save_succeeded = true;
             }
             Err(SaveError::StaleDisk { which }) => {
                 save_state.stale_prompt = Some(which);
@@ -473,6 +478,15 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
                 save_state.last_error = Some(e.to_string());
             }
         }
+    }
+    // Task 12 review (Fix 3): a pending chip-switch "unsaved changes — switch anyway?" prompt is
+    // stale the instant a Save/Reload/Overwrite succeeds — whichever of the three, `entry`'s dirty
+    // flags are now clear, so the prompt's premise ("you'd be switching away from something
+    // unsaved") no longer holds. The `ChipSwitchPrompt` write-back above already ran this frame
+    // with whatever `chip_prompt` the closure computed (unaware of the save result, which is only
+    // known after the closure ends) — this deliberately runs AFTER and resets it to empty.
+    if save_succeeded {
+        *world.resource_mut::<ChipSwitchPrompt>() = ChipSwitchPrompt::default();
     }
 
     if pin_toggled {
@@ -507,6 +521,43 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
     if jump_to_effect_mode {
         world.resource_mut::<PinnedWindows>().0.insert(EditorMode::Skill);
         world.resource_mut::<NextState<EditorMode>>().set(EditorMode::Effect);
+    }
+}
+
+/// Task 12 review (Fix 1 + Fix 2): apply a departing skill's write-back and (optionally) switch
+/// `library.open` to a new target — extracted out of `draw_skill_panel`'s closing block into its
+/// own fn purely so the ordering invariant it embodies is unit-testable (see the `tests` module
+/// below) rather than resting only on statement order inside a 350-line, egui-bound function.
+///
+/// **Fix 1 — write-back regardless of switch.** `editing` (the departing skill's just-edited
+/// clone, dirty flags and all) is ALWAYS written back into `library.skills` under `editing_id`,
+/// whether or not `switch_to` is also `Some`. This is what the property "switching skills via a
+/// chip preserves the departing DIRTY skill's in-memory edits" rests on: if a future change ever
+/// made the write-back conditional on `switch_to.is_none()` (e.g. reasoning "why persist an entry
+/// we're navigating away from?" — a plausible-sounding but wrong optimization, since
+/// `library.skills` is the ONLY place `editing`'s edits live until Save), the departing skill's
+/// edits would silently vanish the instant the user switched away via a chip. See
+/// `switching_away_preserves_the_departing_dirty_entry` below.
+///
+/// **Fix 2 — no phantom-open on a dangling target.** `switch_to` only actually changes
+/// `library.open` when the target id resolves to a real entry in `library.skills`. A Trigger chip
+/// renders for a dangling `trigger_skill` reference by design (see `panel::chips`'s module doc
+/// comment) — clicking one used to set `library.open` to that nonexistent id regardless, which
+/// rendered the panel's generic "nothing open" empty state (reads as "the skill vanished", not
+/// "that target doesn't exist yet"). Staying on the current skill is the minimum fix; a future
+/// revision could surface a transient hint instead. See
+/// `switching_to_a_dangling_target_leaves_open_unchanged` below.
+fn apply_skill_switch(
+    library: &mut SkillLibrary,
+    editing: SkillEntry,
+    editing_id: &str,
+    switch_to: Option<String>,
+) {
+    library.skills.insert(editing_id.to_string(), editing);
+    if let Some(target) = switch_to
+        && library.skills.contains_key(&target)
+    {
+        library.open = Some(target);
     }
 }
 
@@ -1046,9 +1097,119 @@ fn skill_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skill::templates::strike_template;
+    use std::path::PathBuf;
 
     #[test]
     fn skill_mode_panel_side_is_right() {
         assert_eq!(EditorMode::Skill.panel_side(), Some(PanelSide::Right));
+    }
+
+    fn entry(id: &str) -> SkillEntry {
+        let (rules, timeline) = strike_template(id);
+        SkillEntry {
+            rules,
+            timeline,
+            rules_path: PathBuf::new(),
+            timeline_path: PathBuf::new(),
+            dirty_rules: false,
+            dirty_timeline: false,
+            disk_hash: (0, 0),
+        }
+    }
+
+    // --- Task 12 review, Fix 1: the write-back-then-switch invariant ---
+
+    /// The property under test: "switching skills via a chip preserves the departing DIRTY
+    /// skill's in-memory edits." Library starts with a CLEAN "A" (currently open) and a clean
+    /// "B". A clone of "A" is mutated dirty (mirrors what `draw_skill_panel`'s region closures do
+    /// to `editing_entry` over the course of a frame) and handed to `apply_skill_switch` alongside
+    /// a switch to "B". Both must hold: the switch applies, AND "A"'s slot in `library.skills`
+    /// carries the dirty edits forward rather than the stale clean snapshot it started this test
+    /// with — i.e. the switch must never come at the cost of discarding the departing skill's
+    /// edits.
+    #[test]
+    fn switching_away_preserves_the_departing_dirty_entry() {
+        let mut library = SkillLibrary::default();
+        library.skills.insert("A".to_string(), entry("A"));
+        library.skills.insert("B".to_string(), entry("B"));
+        library.open = Some("A".to_string());
+
+        let mut dirty_a = library.skills["A"].clone();
+        dirty_a.rules.mana_cost = 999.0;
+        dirty_a.dirty_rules = true;
+
+        apply_skill_switch(&mut library, dirty_a, "A", Some("B".to_string()));
+
+        assert_eq!(library.open, Some("B".to_string()), "the switch must apply");
+        let a = &library.skills["A"];
+        assert_eq!(a.rules.mana_cost, 999.0, "A's edit must survive the switch away from it");
+        assert!(a.dirty_rules, "A's dirty flag must survive the switch away from it");
+    }
+
+    /// A regression that skips (or conditions away) the write-back whenever a switch is also
+    /// requested — see `apply_skill_switch`'s own doc comment for exactly this scenario — would
+    /// fail the assertion above: "A" would keep reading back as its pre-edit clean snapshot
+    /// (`mana_cost` at the template default, `dirty_rules` false) instead of carrying the dirty
+    /// edit through. This test pins that failure signature down explicitly so it's obvious what
+    /// broke if this ever regresses, without relying on hand-editing `apply_skill_switch` to
+    /// prove it (which was done manually once while authoring this fix: temporarily reordering it
+    /// to switch-then-write-back-conditionally reproduced exactly this failure, confirming the
+    /// test's bite).
+    #[test]
+    fn departing_entry_is_never_left_on_its_stale_clean_snapshot() {
+        let mut library = SkillLibrary::default();
+        let clean_a = entry("A");
+        let clean_mana = clean_a.rules.mana_cost;
+        library.skills.insert("A".to_string(), clean_a);
+        library.skills.insert("B".to_string(), entry("B"));
+        library.open = Some("A".to_string());
+
+        let mut dirty_a = library.skills["A"].clone();
+        dirty_a.rules.mana_cost = clean_mana + 1234.0;
+        dirty_a.dirty_rules = true;
+        dirty_a.dirty_timeline = true;
+
+        apply_skill_switch(&mut library, dirty_a, "A", Some("B".to_string()));
+
+        let a = &library.skills["A"];
+        assert_ne!(a.rules.mana_cost, clean_mana, "must not silently revert to the stale clean copy");
+        assert!(a.dirty_rules && a.dirty_timeline);
+    }
+
+    #[test]
+    fn no_switch_requested_still_writes_back() {
+        let mut library = SkillLibrary::default();
+        library.skills.insert("A".to_string(), entry("A"));
+        library.open = Some("A".to_string());
+
+        let mut dirty_a = library.skills["A"].clone();
+        dirty_a.rules.mana_cost = 42.0;
+        dirty_a.dirty_rules = true;
+
+        apply_skill_switch(&mut library, dirty_a, "A", None);
+
+        assert_eq!(library.open, Some("A".to_string()), "no switch requested — open must not move");
+        assert_eq!(library.skills["A"].rules.mana_cost, 42.0);
+    }
+
+    // --- Task 12 review, Fix 2: no phantom-open on a dangling chip target ---
+
+    #[test]
+    fn switching_to_a_dangling_target_leaves_open_unchanged() {
+        let mut library = SkillLibrary::default();
+        library.skills.insert("A".to_string(), entry("A"));
+        library.open = Some("A".to_string());
+
+        let mut dirty_a = library.skills["A"].clone();
+        dirty_a.dirty_rules = true;
+
+        apply_skill_switch(&mut library, dirty_a, "A", Some("ghost".to_string()));
+
+        assert_eq!(library.open, Some("A".to_string()), "must not navigate to a nonexistent skill");
+        assert!(
+            library.skills["A"].dirty_rules,
+            "write-back must still happen even when the switch itself is rejected"
+        );
     }
 }
