@@ -1,5 +1,26 @@
 //! Skill mode — obelisk skill authoring (K key, right panel).
 //!
+//! **What this is, in one paragraph.** Skill mode is one of `bevy_modal_editor`'s
+//! BUILT-IN modes — it ships in this crate, registered the same way `View`/`Edit`/
+//! `Material`/`Effect` are, NOT bolted on afterward through the `register_editor_mode`
+//! extension seam a downstream game would use for its own custom mode (that's how v1's
+//! `arena_editor` did it; phase 4 deletes that whole crate in favor of this). A host
+//! game opts in with the `obelisk` Cargo feature and one
+//! `RegisterObeliskContentExt::register_obelisk_content(root)` call per content root
+//! (see `library`'s doc comment) — the K-key mode switch, the panel, the palette, and
+//! the deterministic preview stage all come from here.
+//!
+//! **The triad it authors.** Every skill is three on-disk artifacts, one per panel
+//! region (`panel::rules`/`panel::behavior`/`panel::presentation`, drawn in that order
+//! by `draw_skill_panel` below):
+//! - **Rules** — `stat_core::Skill`, saved to `config/skills/*.toml`: costs, damage,
+//!   crit, triggers (what the skill DOES to stats).
+//! - **Behavior** — `obelisk_bevy::assets::CastTimeline`, saved to
+//!   `assets/skills/<id>.cast.ron`: phases, acquisition, collision windows/emitters
+//!   (what the skill DOES in space and time).
+//! - **Presentation** — `CastTimeline::cues`, referencing `bevy_effect`/`bevy_vfx`
+//!   presets under `assets/effects/`/`assets/vfx/` (what the skill LOOKS/SOUNDS like).
+//!
 //! This module only compiles with `--features obelisk`. `EditorMode::Skill`
 //! itself always exists (see `editor::state::EditorMode`), but without this
 //! feature nothing ever transitions into it: the K-key handler in
@@ -8,9 +29,11 @@
 //!
 //! The panel (drawn by `draw_skill_panel` below, registered via
 //! `ui::skill_editor::SkillEditorPlugin` per the panel-plugin convention — see that
-//! module) shows the currently open skill's id, or an empty-state hint when no
-//! content root has been registered yet. `library` (Task 5) owns `SkillLibrary` +
-//! content-root scanning; `templates` owns the archetype starter templates.
+//! module) shows the currently open skill's id, or one of three empty-state hints:
+//! no content root registered yet, a registered-but-empty library, or a non-empty
+//! library with nothing open (see the `has_content_roots`/`skill_count` branches in
+//! `draw_skill_panel` below). `library` (Task 5) owns `SkillLibrary` + content-root
+//! scanning; `templates` owns the archetype starter templates.
 //!
 //! `SkillModePlugin` here owns non-UI systems: the `SkillLibrary`/content-root
 //! machinery and the probe; it is registered from `EditorPlugin::build`.
@@ -304,7 +327,9 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
                         ui.label(
                             egui::RichText::new(
                                 "Call RegisterObeliskContentExt::register_obelisk_content(root) \
-                                 to point Skill mode at a content root.",
+                                 in your game's App setup to point Skill mode at a content root \
+                                 — a directory with config/skills/, assets/skills/, \
+                                 assets/effects/, and assets/vfx/ subdirectories.",
                             )
                             .color(colors::TEXT_SECONDARY)
                             .small(),
@@ -399,6 +424,24 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
                                     &mut jump_to_effect_mode,
                                 );
                             });
+                        }
+                        (None, _) | (_, None) if skill_count == 0 => {
+                            // Roots are registered (the `!has_content_roots` early return above
+                            // already handled that case) but nothing has been scanned or created
+                            // yet — point straight at the one thing that helps: the palette's
+                            // "New Skill" rows.
+                            ui.label(
+                                egui::RichText::new("No skills yet")
+                                    .color(colors::TEXT_SECONDARY),
+                            );
+                            ui.label(
+                                egui::RichText::new(
+                                    "Press F \u{2192} New Skill to create one from an archetype \
+                                     template.",
+                                )
+                                .color(colors::TEXT_SECONDARY)
+                                .small(),
+                            );
                         }
                         (None, _) | (_, None) => {
                             ui.label(

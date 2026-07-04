@@ -79,7 +79,8 @@ The editor uses vim-like modal editing (`src/editor/state.rs`):
 - **Inspector mode**: Edit component properties via reflection
 - **Blockout mode**: Rapid tile-based level prototyping
 - **Material mode**: Edit materials and textures
-- Mode keys: `E`/`I`/`O`/`H`/`B`/`M`, Escape returns to View mode
+- **Skill mode** (`src/skill/`, `--features obelisk` only): author obelisk skills (rules/behavior/presentation triad) against a game-registered content root; built in, not a downstream custom mode — see `src/skill/mod.rs`'s doc comment
+- Mode keys: `E`/`I`/`O`/`H`/`B`/`M`/`K` (K = Skill, obelisk feature only), Escape returns to View mode
 
 ### Core Modules
 

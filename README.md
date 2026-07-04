@@ -233,6 +233,7 @@ fn on_game_start(mut events: MessageReader<GameStartedEvent>) {
 | `H` | Hierarchy mode |
 | `B` | Blockout mode |
 | `M` | Material mode |
+| `K` | Skill mode (obelisk skill authoring — requires `--features obelisk` and a game-registered content root) |
 | `Shift+key` | Switch from any mode |
 | `Escape` | Return to View mode |
 
