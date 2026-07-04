@@ -880,6 +880,15 @@ fn draw_emitter_subcard(ui: &mut egui::Ui, idx: usize, tl: &mut CastTimeline, te
             .fill(colors::BG_DARKEST)
             .corner_radius(egui::CornerRadius::same(4))
             .inner_margin(egui::Margin::same(6));
+
+        // Deferred removal (module doc comment's "deferred-write pattern"): the × below only
+        // flags `remove_clicked` this frame — the actual `edits::remove_emitter` call (which
+        // clears `emitter`) happens AFTER `frame.show` returns, not before. The
+        // `if !remove_clicked` guard below skips the field-editing grid (and its
+        // `.as_mut().unwrap()`) entirely on the same frame the × was clicked, so nothing ever
+        // unwraps the field this same call — mirrors how the "+ emitter" path below never
+        // reads a freshly-`Some` field until the frame after it's added.
+        let mut remove_clicked = false;
         frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Emitter").strong().color(colors::ACCENT_CYAN));
@@ -889,12 +898,14 @@ fn draw_emitter_subcard(ui: &mut egui::Ui, idx: usize, tl: &mut CastTimeline, te
                         .on_hover_text("Remove emitter")
                         .clicked()
                     {
-                        tl.collision_windows[idx].emitter = None;
-                        changed = true;
-                        clear_guard_error(ui, &window_id);
+                        remove_clicked = true;
                     }
                 });
             });
+
+            if remove_clicked {
+                return;
+            }
 
             let emitter = tl.collision_windows[idx].emitter.as_mut().unwrap();
             egui::Grid::new(("emitter_grid", idx))
@@ -936,6 +947,16 @@ fn draw_emitter_subcard(ui: &mut egui::Ui, idx: usize, tl: &mut CastTimeline, te
                     ui.end_row();
                 });
         });
+
+        if remove_clicked {
+            match edits::remove_emitter(tl, idx) {
+                Ok(()) => {
+                    changed = true;
+                    clear_guard_error(ui, &window_id);
+                }
+                Err(e) => set_guard_error(ui, &window_id, e),
+            }
+        }
     } else {
         ui.horizontal(|ui| {
             if !template_ids.is_empty() {

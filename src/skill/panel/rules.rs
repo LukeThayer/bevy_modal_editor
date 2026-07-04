@@ -753,3 +753,44 @@ fn draw_advanced(ui: &mut egui::Ui, rules: &Skill) {
             .color(colors::TEXT_MUTED),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Drift guard (phase-3 whole-branch review): `CONDITION_CATALOG` is a hand-maintained
+    /// table paralleling `loot_core::TriggerCondition` (see this module's top doc comment —
+    /// `loot_core` has no `EnumVariants` impl for it, since its variants carry payloads, and
+    /// no `strum`/`EnumCount`-style derive either, so there's no upstream variant-count or
+    /// ALL-variants array to assert against instead). Without this test, a future upstream
+    /// variant addition would silently drop out of the authoring UI's dropdown — nothing
+    /// would fail, the catalog would just quietly stay at the old count.
+    ///
+    /// This is HALF of the guard. The other half is compile-time and already exists:
+    /// `condition_label` (just above `CONDITION_CATALOG` in this file) matches every
+    /// `TriggerCondition` variant with no wildcard arm, so it already fails to compile the
+    /// moment `loot_core::TriggerCondition` gains a variant — forcing whoever bumps the
+    /// `loot_core` rev to notice and add a label. But that compile error doesn't, by itself,
+    /// force them to also add a `CONDITION_CATALOG` entry (the crate would compile fine with
+    /// the new arm labeled but never offered in the picker) — closing exactly that gap is
+    /// this test's job, which is why it has to be a runtime length check rather than another
+    /// compile-time one: `CONDITION_CATALOG` is a plain `const` slice with no
+    /// compiler-checkable relationship to the enum's arity.
+    ///
+    /// Bump this number when `loot_core::TriggerCondition` gains (or loses) a variant — and
+    /// add (or remove) the matching `CONDITION_CATALOG` entry in the same change.
+    #[test]
+    fn condition_catalog_len_matches_trigger_condition_variant_count() {
+        assert_eq!(
+            CONDITION_CATALOG.len(),
+            36,
+            "CONDITION_CATALOG drifted from loot_core::TriggerCondition's variant count — a \
+             variant was added or removed upstream without a matching CONDITION_CATALOG entry \
+             (see this test's doc comment)"
+        );
+    }
+}

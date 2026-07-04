@@ -12,6 +12,12 @@
 //! guard/`set_spawn_kind` have no v1 analog — they exist to keep every mutation landing
 //! on a timeline `validate_timeline` still accepts (Task 11's emitter/Template rules,
 //! Task 10's CastPoint-reachability rule).
+//!
+//! `remove_emitter` (phase-3 whole-branch review fix) is the one deliberate exception to
+//! that "stays valid" invariant: it always succeeds when an emitter is present, even when
+//! doing so leaves the emitter's former `Template` target transiently unreferenced (a
+//! `validate_timeline` rejection). See its doc comment for why refusing instead would
+//! deadlock it against `remove_window`'s/`set_spawn_kind`'s own emitter-reference guards.
 
 use bevy::prelude::*;
 
@@ -222,6 +228,39 @@ pub fn add_emitter_with_new_template(tl: &mut CastTimeline, window_idx: usize) -
         window: new_id,
     });
     new_idx
+}
+
+/// Clear `tl.collision_windows[window_idx]`'s `emitter` field — the inverse of `add_emitter`/
+/// `add_emitter_with_new_template`. Refused (message names the blocker) if:
+/// - `window_idx` is out of range;
+/// - the window carries no emitter to remove.
+///
+/// Unlike `remove_window`'s conservative "refuse rather than cascade" reading, this fn does
+/// NOT refuse when clearing the reference leaves its `Template` target unreferenced by any
+/// other window's emitter (`validate_timeline` would then reject the result: "is a Template
+/// but is never referenced by an emitter"). That transient invalid state is intentional, not
+/// an oversight: `remove_window`'s own guards ("a Template referenced by another window's
+/// emitter" / "carries an emitter") and `set_spawn_kind`'s ("flip FROM Template while still
+/// referenced") all refuse to touch a Template or its carrier WHILE the emitter reference is
+/// live. This fn is the ONLY way to sever that reference without deleting a whole window — if
+/// it also refused whenever the target would end up unreferenced, all three fns would
+/// deadlock each other (nothing could ever unblock the other two; see
+/// `remove_emitter_then_remove_window_on_the_orphan_restores_validity` below for the proof).
+/// The author's natural next click is `remove_window` on the now-unreferenced Template (no
+/// longer blocked), repointing another emitter at it (`add_emitter`), or
+/// `set_spawn_kind(.., false)` to fold it back to `Scheduled` (also no longer blocked) — the
+/// panel's live-validation inline card (see `panel::behavior`'s module doc comment) surfaces
+/// the orphan in the meantime, same as any other `validate_timeline` rejection.
+pub fn remove_emitter(tl: &mut CastTimeline, window_idx: usize) -> Result<(), String> {
+    let Some(window) = tl.collision_windows.get(window_idx) else {
+        return Err(format!("no window at index {window_idx}"));
+    };
+    if window.emitter.is_none() {
+        return Err(format!("'{}' has no emitter to remove", window.id));
+    }
+
+    tl.collision_windows[window_idx].emitter = None;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +520,63 @@ mod tests {
             tl.collision_windows[new_idx].id
         );
         assert!(validate_timeline(&tl).is_ok(), "{:?}", validate_timeline(&tl));
+    }
+
+    // -- remove_emitter ---------------------------------------------------------------------
+
+    #[test]
+    fn remove_emitter_clears_the_field_positive() {
+        let mut tl = fixture();
+        add_emitter_with_new_template(&mut tl, 0);
+        assert!(tl.collision_windows[0].emitter.is_some(), "fixture must start with an emitter");
+
+        let result = remove_emitter(&mut tl, 0);
+        assert!(result.is_ok(), "{result:?}");
+        assert!(tl.collision_windows[0].emitter.is_none());
+    }
+
+    /// Documents the orphan-state design decision from the doc comment above: clearing the
+    /// ONLY emitter that referenced a Template window leaves that Template transiently
+    /// invalid — `remove_emitter` does NOT cascade-fix it (delete it, or flip it back to
+    /// Scheduled) on the caller's behalf.
+    #[test]
+    fn remove_emitter_leaves_an_unreferenced_template_transiently_invalid() {
+        let mut tl = fixture();
+        add_emitter_with_new_template(&mut tl, 0);
+        remove_emitter(&mut tl, 0).expect("fixture's window 0 has an emitter");
+
+        let err = validate_timeline(&tl).expect_err("the now-orphaned Template must fail validation");
+        assert!(err.contains("never referenced by an emitter"), "{err}");
+    }
+
+    /// The orphan documented above is never a dead end: once the emitter is cleared, the
+    /// previously-blocked `remove_window` on the (now-unreferenced) Template succeeds,
+    /// restoring validity — proving the three emitter/Template fns don't deadlock each other
+    /// (see `remove_emitter`'s doc comment).
+    #[test]
+    fn remove_emitter_then_remove_window_on_the_orphan_restores_validity() {
+        let mut tl = fixture();
+        let template_idx = add_emitter_with_new_template(&mut tl, 0);
+        remove_emitter(&mut tl, 0).expect("fixture's window 0 has an emitter");
+
+        let result = remove_window(&mut tl, template_idx);
+        assert!(result.is_ok(), "{result:?}");
+        assert!(validate_timeline(&tl).is_ok(), "{:?}", validate_timeline(&tl));
+    }
+
+    #[test]
+    fn remove_emitter_refuses_when_none_present() {
+        let mut tl = fixture();
+        let result = remove_emitter(&mut tl, 0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no emitter"));
+    }
+
+    #[test]
+    fn remove_emitter_refuses_out_of_range() {
+        let mut tl = fixture();
+        let result = remove_emitter(&mut tl, 99);
+        assert!(result.is_err());
     }
 
     // -- remove_window ----------------------------------------------------------------------
