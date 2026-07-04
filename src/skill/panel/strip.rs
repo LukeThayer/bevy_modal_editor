@@ -18,6 +18,24 @@
 //!   directly; v2 has no equivalent event log outside test harnesses, see
 //!   `crate::skill::preview::scrub`'s module doc comment).
 //!
+//! **Task 11 review fix — INTERACTIVE range vs RENDERED range.** The strip used to map a
+//! click/drag straight to the RENDERED range (`base.max(dynamic_end)`), which made the trailing
+//! sub-cast region permanently unreachable: `dynamic_end` only grows when `drive_scrub`'s seek
+//! loop (`while clock < target`) runs at least one iteration, which requires `target` to sit
+//! STRICTLY past the sim's current clock — but the far edge of the rendered range always equals
+//! the CURRENT `dynamic_end`/clock by construction, so the loop always ran zero iterations and
+//! the region froze one tick past `base` forever. [`strip_click_to_target`] now maps clicks
+//! against a wider INTERACTIVE range, hard-capped at `base + MAX_TRAILING_SECS` — the exact same
+//! ceiling `drive_scrub`'s own `hard_cap` already allows `target` to reach — so a single
+//! far-edge gesture can always drive the seek loop forward and grow `dynamic_end`, whether or not
+//! anything has been discovered yet. [`draw_scrub_strip`] uses this same wider span as the ONE
+//! pixel-mapping denominator for every element (phase/window bars, markers, playhead), not just
+//! the click formula, so what's drawn always lines up with what's clickable; the consequence
+//! (chosen deliberately over incremental-headroom growth, which needs multiple drags to reach a
+//! distant sub-cast and is less predictable UX) is that a short base skill's phases/windows
+//! occupy a small fraction of the strip's width — mitigated by shading and labeling the
+//! not-yet-simulated tail so that compression reads as intentional, not broken.
+//!
 //! [`draw_scrub_strip`] is pure UI: it never touches `ScrubSim` directly (the panel that calls it
 //! — `crate::skill::draw_skill_panel` — is an EXCLUSIVE `world: &mut World` fn that snapshots
 //! resources as immutable locals before the egui window closure and writes mutations back only
@@ -32,7 +50,9 @@ use obelisk_bevy::assets::{CastTimeline, CollisionWindow, PhaseDurations, Window
 use obelisk_bevy::prelude::charge_mult;
 
 use crate::skill::library::SkillEntry;
-use crate::skill::preview::{MarkerKind, Playhead, ScrubMarkers, ScrubMode, ScrubSim};
+use crate::skill::preview::{
+    MarkerKind, Playhead, ScrubMarkers, ScrubMode, ScrubSim, MAX_TRAILING_SECS,
+};
 
 const STRIP_H: f32 = 40.0;
 const PHASE_COLORS: [egui::Color32; 3] = [
@@ -91,6 +111,27 @@ pub fn time_to_x(t: f32, span: f32, left: f32, width: f32) -> f32 {
     }
 }
 
+/// Map a strip click/drag's normalized pointer fraction `rel_x` (`[0, 1]` across the strip's
+/// pixel rect) to an absolute sim-time seek target.
+///
+/// This is the strip's INTERACTIVE range, deliberately wider than its RENDERED range (`base`
+/// paired with the empirically-discovered `dynamic_end` — see the module doc comment). Task 11
+/// review: clamping the click target to the rendered range made the trailing sub-cast region
+/// permanently unreachable, since the far edge of that range always equals the sim's OWN current
+/// clock by construction, so `drive_scrub`'s seek loop (`while clock < target`) always ran zero
+/// iterations there.
+///
+/// The interactive span is hard-capped at `base + MAX_TRAILING_SECS` — the SAME ceiling
+/// `drive_scrub`'s own `hard_cap` already enforces on `target` — so a runaway drag can never ask
+/// the engine to seek further than it is willing to run, and a single far-edge gesture can always
+/// reach anywhere the engine can go. `dynamic_end` is folded in via `.max` defensively: it can
+/// never legitimately exceed the cap (`extend_dynamic_end` clamps it too), but this keeps the
+/// interactive range from ever being narrower than what's already been rendered.
+pub fn strip_click_to_target(rel_x: f32, base: f32, dynamic_end: f32) -> f32 {
+    let interactive_span = (base + MAX_TRAILING_SECS).max(dynamic_end);
+    rel_x.clamp(0.0, 1.0) * interactive_span
+}
+
 fn marker_color(kind: MarkerKind) -> egui::Color32 {
     match kind {
         MarkerKind::WindowOpened => egui::Color32::from_rgb(120, 200, 255),
@@ -109,9 +150,10 @@ fn marker_label(kind: MarkerKind) -> &'static str {
     }
 }
 
-/// Draw the scrub strip for the currently open `entry`: the phase/window bars, the trailing
-/// sub-cast region, event markers, the playhead, the (replay) control, and the charge slider.
-/// See the module doc comment for the out-param write-back convention.
+/// Draw the scrub strip for the currently open `entry`: the phase/window bars, the two-band
+/// trailing region (discovered vs undiscovered — see the module doc comment), event markers, the
+/// playhead, the (replay) control, and the charge slider. See the module doc comment for the
+/// out-param write-back convention and the interactive-vs-rendered range split.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_scrub_strip(
     ui: &mut egui::Ui,
@@ -125,7 +167,15 @@ pub fn draw_scrub_strip(
 ) {
     let tl = &entry.timeline;
     let base = base_span(tl).max(0.0001);
-    let span = base.max(scrub.dynamic_end);
+    // RENDERED range: what's actually known -- authored data (`base`) maxed with however far the
+    // sim has empirically run this scrub session (`dynamic_end`). Phase/window bars, markers, and
+    // the "discovered" trailing band all represent times within this range.
+    let rendered_end = base.max(scrub.dynamic_end);
+    // INTERACTIVE range: the single pixel-mapping denominator for EVERYTHING below (bars,
+    // markers, playhead, AND the click formula) — deliberately wider than `rendered_end` so a
+    // far-edge gesture can always reach into not-yet-simulated trailing time. See the module doc
+    // comment (Task 11 review) for why this must be one shared scale, not two.
+    let interactive_span = (base + MAX_TRAILING_SECS).max(rendered_end);
 
     let (rect, strip_resp) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), STRIP_H),
@@ -134,26 +184,45 @@ pub fn draw_scrub_strip(
     if (strip_resp.clicked() || strip_resp.dragged())
         && let Some(pos) = strip_resp.interact_pointer_pos()
     {
-        let t = ((pos.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0) * span;
-        *new_target = Some(t);
+        let rel_x = (pos.x - rect.left()) / rect.width().max(1.0);
+        *new_target = Some(strip_click_to_target(rel_x, base, scrub.dynamic_end));
     }
     let p = ui.painter_at(rect);
     p.rect_filled(rect, 0.0, egui::Color32::from_rgb(24, 24, 28));
 
-    // The trailing sub-cast region (past the base span) reads as a dim, visually distinct band
-    // from the authored phases/windows to its left — see the module doc comment.
-    if span > base {
-        let x0 = time_to_x(base, span, rect.left(), rect.width());
+    // The trailing region past `base` is TWO visually distinct bands (Task 11 review): what the
+    // sim has actually run (`base..rendered_end`, dim warm -- may hold a revealed sub-cast) and
+    // what it hasn't yet (`rendered_end..interactive_span`, dim cool + labeled -- dragging there
+    // is the "simulate ahead" gesture that grows `dynamic_end`). Without this split a short base
+    // skill's own content would read as a bare sliver with no explanation why.
+    if rendered_end > base {
+        let x0 = time_to_x(base, interactive_span, rect.left(), rect.width());
+        let x1 = time_to_x(rendered_end, interactive_span, rect.left(), rect.width());
         p.rect_filled(
-            egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(rect.right(), rect.bottom())),
+            egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1, rect.bottom())),
             0.0,
             egui::Color32::from_rgb(45, 38, 30),
         );
     }
+    if interactive_span > rendered_end {
+        let x0 = time_to_x(rendered_end, interactive_span, rect.left(), rect.width());
+        p.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(rect.right(), rect.bottom())),
+            0.0,
+            egui::Color32::from_rgb(20, 24, 30),
+        );
+        p.text(
+            egui::pos2(x0 + 4.0, rect.top() + 3.0),
+            egui::Align2::LEFT_TOP,
+            "drag to simulate ahead",
+            egui::FontId::proportional(9.0),
+            egui::Color32::from_rgb(130, 140, 155),
+        );
+    }
 
     for (i, (s, e)) in phase_spans(&tl.phase_durations).iter().enumerate() {
-        let x0 = time_to_x(*s, span, rect.left(), rect.width());
-        let x1 = time_to_x(*e, span, rect.left(), rect.width());
+        let x0 = time_to_x(*s, interactive_span, rect.left(), rect.width());
+        let x1 = time_to_x(*e, interactive_span, rect.left(), rect.width());
         p.rect_filled(
             egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1, rect.center().y)),
             0.0,
@@ -164,8 +233,8 @@ pub fn draw_scrub_strip(
         let Some((ws, we)) = window_span(&tl.phase_durations, w) else {
             continue;
         };
-        let x0 = time_to_x(ws, span, rect.left(), rect.width());
-        let x1 = time_to_x(we, span, rect.left(), rect.width());
+        let x0 = time_to_x(ws, interactive_span, rect.left(), rect.width());
+        let x1 = time_to_x(we, interactive_span, rect.left(), rect.width());
         p.rect_filled(
             egui::Rect::from_min_max(
                 egui::pos2(x0, rect.center().y + 2.0),
@@ -179,7 +248,7 @@ pub fn draw_scrub_strip(
     // Event markers (window opens / hits / ends / trigger firings) — ticks along the strip's
     // bottom edge, colored by kind, sourced from the scrub session's own recorder.
     for marker in &markers.0 {
-        let x = time_to_x(marker.time, span, rect.left(), rect.width());
+        let x = time_to_x(marker.time, interactive_span, rect.left(), rect.width());
         p.line_segment(
             [egui::pos2(x, rect.bottom() - 8.0), egui::pos2(x, rect.bottom())],
             egui::Stroke::new(2.0, marker_color(marker.kind)),
@@ -188,11 +257,11 @@ pub fn draw_scrub_strip(
     if let Some(pos) = strip_resp.hover_pos() {
         const HOVER_PX: f32 = 4.0;
         if let Some(hovered) = markers.0.iter().min_by(|a, b| {
-            let da = (time_to_x(a.time, span, rect.left(), rect.width()) - pos.x).abs();
-            let db = (time_to_x(b.time, span, rect.left(), rect.width()) - pos.x).abs();
+            let da = (time_to_x(a.time, interactive_span, rect.left(), rect.width()) - pos.x).abs();
+            let db = (time_to_x(b.time, interactive_span, rect.left(), rect.width()) - pos.x).abs();
             da.total_cmp(&db)
         }) {
-            let x = time_to_x(hovered.time, span, rect.left(), rect.width());
+            let x = time_to_x(hovered.time, interactive_span, rect.left(), rect.width());
             if (x - pos.x).abs() <= HOVER_PX {
                 strip_resp.clone().on_hover_text(format!(
                     "{} ({}) @ {:.2}s",
@@ -205,14 +274,16 @@ pub fn draw_scrub_strip(
     }
 
     if playhead.active && playhead.total > 0.0 {
-        let x = time_to_x(playhead.elapsed, span, rect.left(), rect.width());
+        let x = time_to_x(playhead.elapsed, interactive_span, rect.left(), rect.width());
         p.line_segment(
             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
             egui::Stroke::new(2.0, egui::Color32::from_rgb(230, 70, 70)),
         );
     } else if scrub.mode != ScrubMode::Idle {
-        // The scrub head shows the SIM's actual clock (the frozen truth), not the request.
-        let x = time_to_x(scrub.clock, span, rect.left(), rect.width());
+        // The scrub head shows the SIM's actual clock (the frozen truth), not the request. Using
+        // `interactive_span` (not just `rendered_end`) lets it actually sit IN the trailing
+        // region while a far seek is landing there, instead of pinning to the old range's edge.
+        let x = time_to_x(scrub.clock, interactive_span, rect.left(), rect.width());
         p.line_segment(
             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
             egui::Stroke::new(2.0, egui::Color32::from_rgb(240, 160, 50)),
@@ -366,5 +437,28 @@ mod tests {
         let d = pd(0.3, 0.1, 0.2);
         let tl = timeline(d, vec![window(WindowSpawn::Template, 5.0)]);
         assert_eq!(base_span(&tl), 0.6);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 11 review: the strip's headline feature — scrub PAST the base timeline to reveal a
+    // triggered sub-cast — was permanently unreachable, because the click formula clamped its
+    // target to the RENDERED range (`base.max(dynamic_end)`), and `dynamic_end` only grows when
+    // `drive_scrub`'s seek loop runs at least one iteration past the current clock. At the far
+    // edge, the old formula always requested exactly the current clock, so the loop ran zero
+    // iterations forever. This test exercises the WIDGET'S OWN click->target math directly (not
+    // a `ScrubSim.target` poke) and must fail red against the pre-fix clamp.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn far_edge_click_reaches_past_the_rendered_range() {
+        let base = 0.6;
+        let dynamic_end = base; // freshly restarted: nothing discovered past base yet
+        let far = strip_click_to_target(1.0, base, dynamic_end);
+        assert!(
+            far > base,
+            "a far-edge click/drag must be able to request a target PAST the base span so \
+             `drive_scrub`'s seek loop actually runs and grows `dynamic_end` -- got {far} for \
+             base {base}"
+        );
     }
 }

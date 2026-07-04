@@ -490,13 +490,21 @@ fn draw_save_header(
 /// hundred frames: enter Skill mode; at frame 150, insert a TEMPLATE-created projectile skill
 /// ("probe_fireball") plus a strike-template skill it triggers on impact
 /// ("probe_fireball_explosion") directly into `SkillLibrary` (no disk — a fake, never-scanned
-/// content root just satisfies the panel's `has_content_roots` gate) and open the fireball, so
-/// frame 200's screenshot (`/tmp/skill_mode_probe.png`) exercises the real Rules region (Task 6:
-/// readouts, tier-1 fields, the trigger card) instead of the empty state; then (Task 8) at frame
-/// 210 pushes a deliberately-dangling `trigger_skill` onto `probe_fireball`'s conditions and
-/// screenshots at 213 (`/tmp/skill_mode_probe_validation.png`) — the real `validate_skill` now
-/// runs every frame, so this exercises the trigger card's inline blocking message AND the
-/// header's disabled Save button end-to-end; then (Task 7) scrolls the panel down via
+/// content root just satisfies the panel's `has_content_roots` gate), PLUS a second, isolated
+/// "probe_scrub_demo"/"probe_scrub_demo_explosion" pair tuned so the triggered explosion
+/// resolves PAST its own base span (`probe_fireball`'s stock template numbers don't — see that
+/// insertion's own comment), and open the fireball, so frame 200's screenshot
+/// (`/tmp/skill_mode_probe.png`) exercises the real Rules region (Task 6: readouts, tier-1
+/// fields, the trigger card) instead of the empty state; then (Task 11) drags to mid-flight
+/// (`/tmp/skill_mode_probe_scrub.png`) and then — Task 11 review — opens "probe_scrub_demo" and
+/// drags to the strip's FAR EDGE through the widget's own `strip::strip_click_to_target` math,
+/// revealing "probe_scrub_demo_explosion"'s triggered blast past the base timeline
+/// (`/tmp/skill_mode_probe_scrub_trailing.png`), then reopens "probe_fireball"; then (Task 8) at
+/// frame 210 pushes a deliberately-dangling `trigger_skill` onto `probe_fireball`'s conditions
+/// and screenshots at 213
+/// (`/tmp/skill_mode_probe_validation.png`) — the real `validate_skill` now runs every frame, so
+/// this exercises the trigger card's inline blocking message AND the header's disabled Save
+/// button end-to-end; then (Task 7) scrolls the panel down via
 /// `SkillPanelScrollHint` and screenshots the Behavior region — Acquisition card +
 /// `probe_fireball`'s one window card — to `/tmp/skill_mode_probe_behavior.png`; then (Task 9)
 /// scrolls further to the panel's true bottom and screenshots the Presentation region — cue
@@ -542,6 +550,11 @@ fn skill_probe(
     match *frame {
         90 => next_mode.set(EditorMode::Skill),
         150 => {
+            use obelisk_bevy::assets::{
+                AcqFallback, Acquisition, CastTimeline, CollisionShape, CollisionWindow, HitFilter,
+                HitMode, MotionDirection, PhaseDurations, VolumeMotion, WindowAnchor, WindowPhase,
+                WindowSpawn,
+            };
             use stat_core::{SkillCondition, TriggerCondition};
 
             let root = std::path::PathBuf::from("/tmp/skill_probe_fake_root");
@@ -585,6 +598,127 @@ fn skill_probe(
             );
 
             skill_library.open = Some(fireball_id);
+
+            // Task 11 review: a SEPARATE, probe-only pair for the far-edge scrub demo below —
+            // never mutating `probe_fireball` itself, so every OTHER screenshot in this probe
+            // stays byte-for-byte unaffected (same discipline as the throwaway VfxLibrary preset
+            // seeded at frame 215). TWO independent reasons `probe_fireball` itself can't serve
+            // this demo, both confirmed empirically while building it:
+            // 1. Its stock Projectile-template numbers (base ~2.2s, from the "bolt" window's
+            //    generous 2.0s `active_duration`) are too generous — the triggered explosion
+            //    would fully resolve INSIDE that base regardless of timing, so scrubbing to the
+            //    far edge would show no discovered band.
+            // 2. More fundamentally: `probe_fireball`'s "bolt" flies STRAIGHT AT the dummy
+            //    (`Acquisition::Aim`, `WindowAnchor::Caster`) and ends via `EndReason::HitEntity`
+            //    when it strikes — obelisk-bevy's lifecycle-trigger evaluation
+            //    (`timeline::advance::end_hitboxes`) maps ONLY `HitWorld → OnImpact` and
+            //    `Fuse → OnExpire`; `HitEntity` maps to no lifecycle condition at all (that hit
+            //    already ran the separate hit-phase evaluation instead — see `end_hitboxes`'s own
+            //    doc comment). So `probe_fireball`'s `OnImpact` condition can never fire by
+            //    hitting the dummy, REGARDLESS of retuned durations — this appears to be a
+            //    pre-existing latent no-op in the probe's own fixture, worth a reviewer's eyes
+            //    separately from this task.
+            // This bespoke pair instead mirrors `tests/skill_scrub.rs`'s OWN proven
+            // `fireball_timeline`/`fireball_explosion_timeline` fixture verbatim (values already
+            // exercised green by `far_edge_widget_click_reveals_the_triggered_explosion` and
+            // `seek_past_impact_shows_the_explosion`): a `GroundPoint`-acquired window that FALLS
+            // (`MotionDirection::Down`) from 3 units above the cast point and genuinely ends via
+            // `HitWorld`, reliably firing `OnImpact` — base ~0.6s; the explosion's own 0.5s
+            // windup (ticked on its `TriggeredExec`'s independent virtual clock, from the ~0.25s
+            // impact) delays "blast" to ~0.75-1.05s, comfortably past base.
+            let demo_timeline = CastTimeline {
+                skill_id: "probe_scrub_demo".to_string(),
+                phase_durations: PhaseDurations { windup: 0.1, active: 0.1, recovery: 0.1 },
+                collision_windows: vec![CollisionWindow {
+                    id: "bolt".to_string(),
+                    spawn: WindowSpawn::Scheduled { phase: WindowPhase::Active, offset: 0.0 },
+                    anchor: WindowAnchor::CastPoint,
+                    anchor_offset: Vec3::new(0.0, 3.0, 0.0),
+                    strikes: false,
+                    active_duration: 0.5,
+                    shape: CollisionShape::Sphere { radius: 0.4 },
+                    motion: VolumeMotion::Linear { speed: 20.0 },
+                    motion_direction: MotionDirection::Down,
+                    hit_filter: HitFilter::Enemies,
+                    hit_mode: HitMode::FirstOnly,
+                    rehit_interval: None,
+                    emitter: None,
+                }],
+                acquisition: Acquisition::GroundPoint {
+                    range: 20.0,
+                    fallback: AcqFallback::Then(Box::new(Acquisition::SelfPoint)),
+                },
+                vfx_cues: Default::default(),
+                chain_radius: 6.0,
+                chargeable: false,
+                max_hold: 1.0,
+                cues: Default::default(),
+            };
+            // Rules borrowed from the Projectile template (id/name/delivery/starter damage
+            // shape) — only its TIMELINE is discarded in favor of the bespoke one above.
+            let (mut demo_rules, _) = SkillArchetype::Projectile.build("probe_scrub_demo");
+            demo_rules.name = "Probe Scrub Demo".to_string();
+            demo_rules.conditions.push(SkillCondition {
+                trigger_skill: "probe_scrub_demo_explosion".to_string(),
+                additional: true,
+                condition: TriggerCondition::OnImpact,
+            });
+            let demo_id = demo_rules.id.clone();
+            skill_library.skills.insert(
+                demo_id.clone(),
+                SkillEntry {
+                    rules: demo_rules,
+                    timeline: demo_timeline,
+                    rules_path: library::rules_path_for(&root, &demo_id),
+                    timeline_path: library::timeline_path_for(&root, &demo_id),
+                    dirty_rules: true,
+                    dirty_timeline: true,
+                    disk_hash: (0, 0),
+                },
+            );
+
+            let demo_explosion_timeline = CastTimeline {
+                skill_id: "probe_scrub_demo_explosion".to_string(),
+                phase_durations: PhaseDurations { windup: 0.5, active: 0.3, recovery: 0.0 },
+                collision_windows: vec![CollisionWindow {
+                    id: "blast".to_string(),
+                    spawn: WindowSpawn::Scheduled { phase: WindowPhase::Active, offset: 0.0 },
+                    anchor: WindowAnchor::CastPoint,
+                    anchor_offset: Vec3::ZERO,
+                    strikes: true,
+                    active_duration: 0.3,
+                    shape: CollisionShape::Sphere { radius: 2.0 },
+                    motion: VolumeMotion::Static,
+                    motion_direction: Default::default(),
+                    hit_filter: HitFilter::Enemies,
+                    hit_mode: HitMode::OncePerTarget,
+                    rehit_interval: None,
+                    emitter: None,
+                }],
+                acquisition: Acquisition::default(),
+                vfx_cues: Default::default(),
+                chain_radius: 6.0,
+                chargeable: false,
+                max_hold: 1.0,
+                cues: Default::default(),
+            };
+            // Rules borrowed from the Strike template, same reasoning as `demo_rules` above.
+            let (mut demo_explosion_rules, _) =
+                SkillArchetype::Strike.build("probe_scrub_demo_explosion");
+            demo_explosion_rules.name = "Probe Scrub Demo Explosion".to_string();
+            let demo_explosion_id = demo_explosion_rules.id.clone();
+            skill_library.skills.insert(
+                demo_explosion_id.clone(),
+                SkillEntry {
+                    rules: demo_explosion_rules,
+                    timeline: demo_explosion_timeline,
+                    rules_path: library::rules_path_for(&root, &demo_explosion_id),
+                    timeline_path: library::timeline_path_for(&root, &demo_explosion_id),
+                    dirty_rules: true,
+                    dirty_timeline: true,
+                    disk_hash: (0, 0),
+                },
+            );
         }
         200 => {
             commands
@@ -605,11 +739,37 @@ fn skill_probe(
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk("/tmp/skill_mode_probe_scrub.png"));
         }
-        // Hand the sim back to Idle before the rest of the probe continues, so the later
-        // screenshots (validation/behavior/presentation/Play) show the stage exactly as they
-        // did before this task — undisturbed by this demo's frozen mid-cast instant.
-        206 => {
+        // Task 11 review fix: open the dedicated "probe_scrub_demo" pair (seeded at frame 150 —
+        // see its own comment for why it's separate from `probe_fireball`) and drag toward the
+        // FAR EDGE through the strip WIDGET's own `strip_click_to_target` click math
+        // (`rel_x = 1.0`), not a direct `ScrubSim.target` poke — proving the strip's headline
+        // feature (scrub PAST the base timeline to reveal the `OnImpact`-triggered
+        // "probe_scrub_demo_explosion") is reachable through the real widget, not just the
+        // engine mechanism. Resetting `ScrubSim` first forces `drive_scrub` to restart on the
+        // newly-opened skill rather than continuing whatever the frame-202 mid-flight demo left
+        // frozen on `probe_fireball`.
+        205 => {
             *scrub = preview::ScrubSim::default();
+            skill_library.open = Some("probe_scrub_demo".to_string());
+            let base = skill_library
+                .skills
+                .get("probe_scrub_demo")
+                .map(|e| panel::strip::base_span(&e.timeline))
+                .unwrap_or(0.0001);
+            scrub.target = Some(panel::strip::strip_click_to_target(1.0, base, scrub.dynamic_end));
+        }
+        208 => {
+            commands
+                .spawn(Screenshot::primary_window())
+                .observe(save_to_disk("/tmp/skill_mode_probe_scrub_trailing.png"));
+        }
+        // Hand the sim back to Idle AND reopen `probe_fireball` before the rest of the probe
+        // continues, so the later screenshots (validation/behavior/presentation/Play) show the
+        // stage exactly as they did before this task — undisturbed by this demo's frozen
+        // mid-cast instant or its stand-in skill.
+        209 => {
+            *scrub = preview::ScrubSim::default();
+            skill_library.open = Some("probe_fireball".to_string());
         }
         // Task 8: mutate `probe_fireball`'s rules with a deliberately-dangling trigger (a
         // `trigger_skill` naming no skill anywhere in the library) so the next screenshot

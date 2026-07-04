@@ -29,6 +29,7 @@ pub use cosmetics::{CosmeticLifetime, PreviewCosmetic, PreviewFlight};
 pub use rig::PreviewAnimGraph;
 pub use scrub::{
     MarkerKind, PreviewScrubPlugin, ScrubMarker, ScrubMarkers, ScrubMode, ScrubSim,
+    MAX_TRAILING_SECS,
 };
 pub use sockets::{resolve_socket, RigSockets};
 pub use stage::{

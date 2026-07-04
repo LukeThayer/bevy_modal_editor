@@ -406,6 +406,63 @@ fn seek_past_impact_shows_the_explosion() {
     );
 }
 
+/// Task 11 review: the flagship test above (and the original automated probe) missed the
+/// review-finding bug because both write `ScrubSim.target` DIRECTLY, bypassing the strip
+/// WIDGET's own click->target math entirely. This test instead computes the seek target through
+/// `strip::strip_click_to_target` -- exactly what the real egui strip does for a far-edge
+/// click/drag (`rel_x = 1.0`) -- and drives it through the real `drive_scrub` loop. It MUST fail
+/// red against the pre-fix clamp (`base.max(dynamic_end)`, which pins a far-edge click to the
+/// sim's own current clock, so the seek loop runs zero iterations forever) and pass once the
+/// strip's interactive range is decoupled from its rendered range.
+#[test]
+fn far_edge_widget_click_reveals_the_triggered_explosion() {
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    let base = strip::base_span(&fireball_timeline());
+    insert_skill(&mut app, "fireball", fireball_rules(), fireball_timeline());
+    insert_skill(
+        &mut app,
+        "fireball_explosion",
+        fireball_explosion_rules(),
+        fireball_explosion_timeline(),
+    );
+    open_skill(&mut app, "fireball");
+    step(&mut app, 3);
+
+    // The REAL widget's far-edge click formula, not a direct `ScrubSim.target` poke.
+    let dynamic_end_before = app.world().resource::<ScrubSim>().dynamic_end;
+    let far_target = strip::strip_click_to_target(1.0, base, dynamic_end_before);
+    assert!(
+        far_target > base,
+        "the widget's own click math must be able to request past the base span ({base}): got {far_target}"
+    );
+    set_target(&mut app, far_target);
+    step(&mut app, 10);
+
+    let scrub = app.world().resource::<ScrubSim>();
+    assert_eq!(scrub.mode, ScrubMode::Frozen, "seek must land in Frozen");
+    assert!(
+        scrub.clock > base + 0.05,
+        "a single far-edge widget click must actually advance the sim past the base span: \
+         clock={}, base={base}",
+        scrub.clock
+    );
+    assert!(
+        scrub.dynamic_end > base + 0.05,
+        "dynamic_end must grow past the base span so the trailing sub-cast region becomes \
+         visible: {}",
+        scrub.dynamic_end
+    );
+
+    let rec = app.world().resource::<EventRecorder>();
+    let ids: Vec<&str> = rec.damage_resolved.iter().map(|d| d.skill_id.as_str()).collect();
+    assert!(
+        ids.contains(&"fireball_explosion"),
+        "the OnImpact-triggered explosion must become reachable through the widget's own click \
+         math -- got {ids:?}"
+    );
+}
+
 /// The Trigger marker (`MarkerKind::Trigger`), exercised via a path that DOES fire
 /// `TriggerFired`. obelisk-bevy's `partition_conditions` (`combat/system.rs`) routes a
 /// `SkillCondition` to one of two disjoint paths depending SOLELY on whether `trigger_skill`
