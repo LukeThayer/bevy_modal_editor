@@ -681,17 +681,21 @@ impl PreviewStageReset<'_, '_> {
 pub struct PreviewCastSkill(pub Option<String>);
 
 /// The stage's resolved cast verb for one `Acquisition` branch — see
-/// [`resolve_stage_acquisition`].
-enum StageAim {
+/// [`resolve_stage_acquisition`]. `pub(crate)`: Task 12's `skill::proxies` reuses this (and
+/// [`StageAimContext`]/[`resolve_stage_acquisition`] below) to resolve a `WindowAnchor::CastPoint`
+/// window's preview position, rather than re-deriving the same acquisition/fallback-walk logic by
+/// hand a second time.
+pub(crate) enum StageAim {
     Entity(Entity),
     Point(Vec3),
     Direction(Vec3),
 }
 
 /// Everything [`resolve_stage_acquisition`] needs to know about the stage's current geometry.
-struct StageAimContext {
-    caster_pos: Vec3,
-    dummy: Option<(Entity, Vec3)>,
+/// `pub(crate)` — see [`StageAim`]'s doc comment.
+pub(crate) struct StageAimContext {
+    pub(crate) caster_pos: Vec3,
+    pub(crate) dummy: Option<(Entity, Vec3)>,
 }
 
 /// **Stage-provided acquisition resolution** (Task 10): resolve the timeline's authored
@@ -706,7 +710,10 @@ struct StageAimContext {
 ///   against the caster's (Player) faction; else the fallback.
 /// - `GroundPoint` → the stage's aim/ground marker point, if in `range`; else the fallback.
 /// - `SelfPoint` → the caster's own position.
-fn resolve_stage_acquisition(acq: &Acquisition, tl: &CastTimeline, ctx: &StageAimContext) -> Option<StageAim> {
+///
+/// `pub(crate)`: reused as-is by `skill::proxies` (Task 12) to resolve a `CastPoint`-anchored
+/// window's preview position — see [`StageAim`]'s doc comment.
+pub(crate) fn resolve_stage_acquisition(acq: &Acquisition, tl: &CastTimeline, ctx: &StageAimContext) -> Option<StageAim> {
     match acq {
         Acquisition::Aim => {
             let to = ctx.dummy.map(|(_, p)| p).unwrap_or_else(ground_marker);

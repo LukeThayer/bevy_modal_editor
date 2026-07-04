@@ -57,7 +57,20 @@ use crate::ui::theme::{colors, grid_label, section_header, GRID_SPACING};
 /// Draw the whole Behavior region for `entry` (the currently open skill). See the module
 /// doc comment for the layout and the dirty/validation/guard-error conventions every
 /// helper below follows.
-pub fn draw_behavior_region(ui: &mut egui::Ui, entry: &mut SkillEntry, report: &ValidationReport) {
+///
+/// `selected_window` is Task 12's viewport-proxy selection signal (`crate::skill::proxies::
+/// SkillSelection::window`, threaded here as a plain `&mut Option<usize>` — the caller,
+/// `crate::skill::draw_skill_panel`, snapshots the resource before this closure runs and writes
+/// the (possibly-changed) value back after it ends, the same deferred-write pattern every other
+/// cross-region signal in this panel uses). A window card's select toggle writes it; removing the
+/// selected window (or a lower-indexed one, shifting indices down) here keeps it valid — see
+/// `draw_windows`.
+pub fn draw_behavior_region(
+    ui: &mut egui::Ui,
+    entry: &mut SkillEntry,
+    report: &ValidationReport,
+    selected_window: &mut Option<usize>,
+) {
     let mut changed = false;
 
     section_header(ui, "Phases & Charge", true, |ui| {
@@ -76,7 +89,7 @@ pub fn draw_behavior_region(ui: &mut egui::Ui, entry: &mut SkillEntry, report: &
 
     let window_count = entry.timeline.collision_windows.len();
     section_header(ui, &format!("Windows ({window_count})"), true, |ui| {
-        changed |= draw_windows(ui, &mut entry.timeline, live_error.as_deref(), report);
+        changed |= draw_windows(ui, &mut entry.timeline, live_error.as_deref(), report, selected_window);
     });
 
     if changed {
@@ -505,7 +518,13 @@ struct WindowCardOutcome {
     remove_requested: bool,
 }
 
-fn draw_windows(ui: &mut egui::Ui, tl: &mut CastTimeline, live_error: Option<&str>, report: &ValidationReport) -> bool {
+fn draw_windows(
+    ui: &mut egui::Ui,
+    tl: &mut CastTimeline,
+    live_error: Option<&str>,
+    report: &ValidationReport,
+    selected_window: &mut Option<usize>,
+) -> bool {
     let mut changed = false;
     let template_ids: Vec<String> = tl
         .collision_windows
@@ -519,7 +538,7 @@ fn draw_windows(ui: &mut egui::Ui, tl: &mut CastTimeline, live_error: Option<&st
     for i in 0..count {
         let id = tl.collision_windows[i].id.clone();
         let card_live_error = live_error.filter(|msg| msg.contains(&format!("'{id}'")));
-        let outcome = window_card(ui, i, tl, &template_ids, card_live_error, report);
+        let outcome = window_card(ui, i, tl, &template_ids, card_live_error, report, selected_window);
         changed |= outcome.changed;
         if outcome.remove_requested {
             remove_index = Some(i);
@@ -529,7 +548,17 @@ fn draw_windows(ui: &mut egui::Ui, tl: &mut CastTimeline, live_error: Option<&st
     if let Some(i) = remove_index {
         let id = tl.collision_windows[i].id.clone();
         match edits::remove_window(tl, i) {
-            Ok(()) => changed = true,
+            Ok(()) => {
+                changed = true;
+                // Keep the viewport-proxy selection (Task 12) valid across a removal: the
+                // removed index itself deselects; anything ABOVE it shifts down by one (indices
+                // past `i` all moved back a slot); anything below is unaffected.
+                *selected_window = match *selected_window {
+                    Some(s) if s == i => None,
+                    Some(s) if s > i => Some(s - 1),
+                    other => other,
+                };
+            }
             Err(e) => set_guard_error(ui, &id, e),
         }
     }
@@ -941,6 +970,8 @@ fn draw_emitter_subcard(ui: &mut egui::Ui, idx: usize, tl: &mut CastTimeline, te
     changed
 }
 
+#[allow(clippy::too_many_arguments)] // one param per thing the card reads/writes; same
+                                      // rationale as `panel::rules::trigger_card`.
 fn window_card(
     ui: &mut egui::Ui,
     idx: usize,
@@ -948,14 +979,16 @@ fn window_card(
     template_ids: &[String],
     live_error: Option<&str>,
     report: &ValidationReport,
+    selected_window: &mut Option<usize>,
 ) -> WindowCardOutcome {
     let mut changed = false;
     let mut remove_requested = false;
 
     let window_id = tl.collision_windows[idx].id.clone();
+    let is_selected = *selected_window == Some(idx);
 
     let frame = egui::Frame::new()
-        .fill(colors::BG_MEDIUM)
+        .fill(if is_selected { colors::BG_HIGHLIGHT } else { colors::BG_MEDIUM })
         .corner_radius(egui::CornerRadius::same(4))
         .inner_margin(egui::Margin::same(6));
 
@@ -972,6 +1005,22 @@ fn window_card(
                     .clicked()
                 {
                     remove_requested = true;
+                }
+                // Task 12: select this window for the viewport gizmo proxy
+                // (`crate::skill::proxies`) — shows its shape (sphere/capsule/cone), resolved to
+                // its stage anchor position, as a draggable-radius gizmo in the viewport.
+                let (icon, color) =
+                    if is_selected { ("\u{25c9}", colors::ACCENT_CYAN) } else { ("\u{25cb}", colors::TEXT_MUTED) };
+                if ui
+                    .add(egui::Button::new(egui::RichText::new(icon).color(color)).frame(false))
+                    .on_hover_text(if is_selected {
+                        "Selected \u{2014} shown as a gizmo in the viewport. Click to deselect."
+                    } else {
+                        "Select \u{2014} show this window's shape as a gizmo in the viewport"
+                    })
+                    .clicked()
+                {
+                    *selected_window = if is_selected { None } else { Some(idx) };
                 }
             });
         });

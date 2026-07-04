@@ -20,6 +20,7 @@ pub mod edits;
 pub mod library;
 pub mod panel;
 pub mod preview;
+pub mod proxies;
 pub mod readouts;
 pub mod save;
 pub mod templates;
@@ -32,6 +33,7 @@ pub use library::{
     SkillEntry, SkillLibrary,
 };
 pub use preview::SkillPreviewPlugin;
+pub use proxies::{SkillProxyPlugin, SkillSelection};
 pub use save::{reload_skill, save_skill, save_skill_overwrite, SaveError, SaveTarget};
 pub use templates::SkillArchetype;
 pub use validation::{validate_skill, Problem, ValidationReport};
@@ -58,6 +60,7 @@ impl Plugin for SkillModePlugin {
             .init_resource::<PendingContentRoots>()
             .init_resource::<SkillPanelScrollHint>()
             .init_resource::<SkillSaveState>()
+            .init_resource::<ChipSwitchPrompt>()
             .add_systems(Startup, library::scan_registered_content_roots)
             .add_systems(Update, skill_probe)
             .register_validation(ValidationRule { name: "skill_rules", validate: skill_validation_rule })
@@ -65,7 +68,10 @@ impl Plugin for SkillModePlugin {
             // stage lifecycle + cue-driven cosmetics), NOT UI, so it lives on this plugin (the
             // panel itself stays on `ui::skill_editor::SkillEditorPlugin`, per the panel-plugin
             // convention noted in the module doc comment above).
-            .add_plugins(SkillPreviewPlugin);
+            .add_plugins(SkillPreviewPlugin)
+            // Task 12: the selected window's ephemeral viewport gizmo proxy — same
+            // engine/logic-not-UI reasoning as `SkillPreviewPlugin` above.
+            .add_plugins(SkillProxyPlugin);
     }
 }
 
@@ -118,6 +124,19 @@ pub struct SkillSaveState {
     /// The last save attempt's error message, if any (cleared on a successful save or when the
     /// open skill changes).
     pub last_error: Option<String>,
+}
+
+/// Task 12: pending "switch to a causality-chip's target while the currently open skill is
+/// unsaved" confirmation — same INLINE-not-modal spirit as `SkillSaveState`'s stale-disk prompt
+/// (Task 8): rendered in the chips row's place until confirmed or cancelled, never a popup.
+/// `for_id` is ignored (treated as no prompt) whenever it doesn't match the currently open skill
+/// — same "stale state from a different skill is discarded" convention `SkillSaveState` uses —
+/// so switching skills through some OTHER path (the palette, say) while a prompt was pending
+/// can't leave a confusing leftover prompt behind.
+#[derive(Resource, Default)]
+pub struct ChipSwitchPrompt {
+    pub for_id: Option<String>,
+    pub pending_target: Option<String>,
 }
 
 /// Debug-only scroll-position override for the Skill panel's `ScrollArea`, consumed by
@@ -190,6 +209,25 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
     } else {
         (None, None)
     };
+
+    // Task 12: same "ignore stale state from a different skill" snapshot pattern as the save
+    // state above, for the causality-chip switch prompt and the viewport-proxy window selection.
+    // Both are plain locals mutated directly inside the closure below (cheap `Option` types, no
+    // borrow-checker conflict with `library`'s immutable borrow) and written back to their
+    // resources once the closure — and every borrow of `library` — has ended.
+    let chip_prompt_state = world.resource::<ChipSwitchPrompt>();
+    let mut chip_prompt = if chip_prompt_state.for_id == open_skill_at_start {
+        chip_prompt_state.pending_target.clone()
+    } else {
+        None
+    };
+    let selection_state = world.resource::<proxies::SkillSelection>();
+    let mut selected_window = if selection_state.for_id == open_skill_at_start {
+        selection_state.window
+    } else {
+        None
+    };
+    let mut switch_to_skill: Option<String> = None;
 
     let library = world.resource::<SkillLibrary>();
     let open_skill = library.open.clone();
@@ -289,6 +327,40 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
                             if let Some(err) = &last_error {
                                 ui.label(egui::RichText::new(err).small().color(colors::STATUS_ERROR));
                             }
+
+                            // Task 12: the causality-chips row — compact navigation, distinct
+                            // from the Rules region's full trigger CARDS (see
+                            // `panel::chips`'s module doc comment). A Trigger chip click either
+                            // switches immediately (nothing unsaved to lose) or stages the inline
+                            // dirty-check prompt right below, mirroring `draw_save_header`'s own
+                            // "inline row, never a modal" convention.
+                            if let Some(target) = panel::chips::draw_chips_row(ui, entry, library) {
+                                if entry.dirty_rules || entry.dirty_timeline {
+                                    chip_prompt = Some(target);
+                                } else {
+                                    switch_to_skill = Some(target);
+                                    chip_prompt = None;
+                                }
+                            }
+                            if let Some(target) = chip_prompt.clone() {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "Unsaved changes \u{2014} switch to '{target}' anyway?"
+                                        ))
+                                        .small()
+                                        .color(colors::STATUS_WARNING),
+                                    );
+                                    if ui.button("Switch anyway").clicked() {
+                                        switch_to_skill = Some(target.clone());
+                                        chip_prompt = None;
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        chip_prompt = None;
+                                    }
+                                });
+                            }
+
                             ui.separator();
 
                             // The scrub strip (Task 11): above the regions — a persistent
@@ -313,7 +385,7 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
                             panel::rules::draw_rules_region(ui, entry, library, &report);
 
                             ui.separator();
-                            panel::behavior::draw_behavior_region(ui, entry, &report);
+                            panel::behavior::draw_behavior_region(ui, entry, &report, &mut selected_window);
 
                             ui.separator();
                             section_header(ui, "Presentation", true, |ui| {
@@ -364,6 +436,25 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
 
     if let (Some(id), Some(entry)) = (open_skill.clone(), editing_entry) {
         world.resource_mut::<SkillLibrary>().skills.insert(id, entry);
+    }
+
+    // Task 12: write back the chip-switch prompt + viewport-proxy window selection for the skill
+    // that was actually rendered THIS frame (`open_skill`, captured before any switch below).
+    // Written unconditionally (even when unchanged, or `open_skill` is `None`) — a since-switched
+    // `for_id` is exactly what the read-side snapshot (above `chip_prompt`/`selected_window`)
+    // already treats as stale, so no extra "did it actually change" branch is needed here.
+    {
+        let mut prompt = world.resource_mut::<ChipSwitchPrompt>();
+        prompt.for_id = open_skill.clone();
+        prompt.pending_target = chip_prompt;
+    }
+    {
+        let mut selection = world.resource_mut::<proxies::SkillSelection>();
+        selection.for_id = open_skill.clone();
+        selection.window = selected_window;
+    }
+    if let Some(target) = switch_to_skill {
+        world.resource_mut::<SkillLibrary>().open = Some(target);
     }
 
     if let Some(result) = action_result {
@@ -522,7 +613,14 @@ fn draw_save_header(
 /// template. The probe-only preset's own auto-saved file is deleted after verification each
 /// time this harness is exercised, same discipline as the fake content root at frame 150);
 /// then opens the skill palette (F in Skill mode — here driven directly via
-/// `CommandPaletteState`) and screenshots it to `/tmp/skill_palette_probe.png` before exiting.
+/// `CommandPaletteState`) and screenshots it to `/tmp/skill_palette_probe.png`; then (Task 10
+/// review) exits Skill mode to show the stage torn down
+/// (`/tmp/skill_mode_probe_view_no_stage.png`); then (Task 12) re-enters Skill mode, drops the
+/// frame-210 dangling trigger so only the one real causality edge remains, selects
+/// `probe_fireball`'s "bolt" window directly via `SkillSelection`, and screenshots
+/// (`/tmp/skill_mode_probe_chips_gizmo.png`) the chips row (`probe_fireball \u{2192}
+/// probe_fireball_explosion`) alongside the selected window's sphere-outline gizmo at the caster —
+/// before exiting.
 /// It's a permanent debug harness — every later Skill-panel task reuses it to confirm the
 /// panel/palette render correctly without a human driving the UI. No-op (and effectively free —
 /// one `env::args()` scan per frame) unless the flag is present.
@@ -541,6 +639,7 @@ fn skill_probe(
     mut next_game_state: ResMut<NextState<bevy_editor_game::GameState>>,
     mut editor_state: ResMut<EditorState>,
     mut scrub: ResMut<preview::ScrubSim>,
+    mut selection: ResMut<proxies::SkillSelection>,
 ) {
     if !std::env::args().any(|arg| arg == "--skill-probe") {
         return;
@@ -901,6 +1000,41 @@ fn skill_probe(
             commands
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk("/tmp/skill_mode_probe_view_no_stage.png"));
+        }
+        // Task 12: re-enter Skill mode (re-spawns a fresh stage — `probe_fireball` is still
+        // `library.open` from frame 209 onward, never changed since) so the chips row + window
+        // proxy gizmo can be demonstrated against a live caster. Also restore the UI (frame 325
+        // hid it for the bare-viewport Play screenshots and never turned it back on) — without
+        // this the Skill panel (and its chips row) never draws at all, only the gizmo would show.
+        390 => {
+            next_mode.set(EditorMode::Skill);
+            editor_state.ui_enabled = true;
+        }
+        // Drop the frame-210 dangling trigger so this screenshot shows exactly the ONE real
+        // causality edge (`probe_fireball \u{2192} probe_fireball_explosion`) the brief's own
+        // example names — nothing later in this probe reads `probe_fireball`'s conditions again,
+        // so this is safe to do here, right before the shot, rather than earlier. Then select
+        // window index 0 ("bolt", the Projectile template's sole window: `Caster` anchor, zero
+        // offset, `Sphere{radius:0.4}` — see `templates::projectile_template`) directly via
+        // `SkillSelection`, exactly the way frame 202 pokes `ScrubSim.target` directly rather
+        // than dragging a widget: this probe drives STATE, not simulated clicks.
+        391 => {
+            if let Some(fireball) = skill_library.skills.get_mut("probe_fireball") {
+                fireball.rules.conditions.retain(|c| c.trigger_skill != "probe_nonexistent_target");
+            }
+            selection.for_id = Some("probe_fireball".to_string());
+            selection.window = Some(0);
+            // A real finding from THIS probe pass: `SkillPanelScrollHint` only FORCES an offset
+            // when `> 0.0` (frame 235 set it to exactly `0.0`, i.e. "stop forcing" — but egui's
+            // `ScrollArea` remembers its own last-forced position across frames regardless, so
+            // without this it would still show frame 234's forced-to-bottom Presentation view,
+            // scrolling the chips row — near the panel's TOP — out of frame entirely).
+            scroll_hint.0 = 1.0;
+        }
+        394 => {
+            commands
+                .spawn(Screenshot::primary_window())
+                .observe(save_to_disk("/tmp/skill_mode_probe_chips_gizmo.png"));
         }
         410 => {
             exit.write(AppExit::Success);

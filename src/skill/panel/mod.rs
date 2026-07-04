@@ -7,6 +7,7 @@
 //! clone back into `SkillLibrary`).
 
 pub mod behavior;
+pub mod chips;
 pub mod presentation;
 pub mod rules;
 pub mod strip;
