@@ -796,11 +796,15 @@ pub fn stage_cast(reset: &mut PreviewStageReset, skill_id: &str, tl: &CastTimeli
 }
 
 /// On a `GameStartedEvent` (Play): reset the stage and cast the CURRENTLY OPEN skill on it — the
-/// same deterministic path a future scrub restart uses (Task 11), at live speed. A no-op if no
-/// skill is open.
+/// same deterministic path a scrub restart uses (`scrub::restart_cast`), at live speed. A no-op
+/// if no skill is open. `scrub` is `Option` because a from-scratch test harness may compose the
+/// stage without `PreviewScrubPlugin` (e.g. `tests/skill_preview.rs`); `None` there just means
+/// Play always casts uncharged (`None` = 1.0x), same as before Task 11 threaded the charge
+/// slider through.
 pub fn start_preview(
     mut started: MessageReader<GameStartedEvent>,
     library: Res<SkillLibrary>,
+    scrub: Option<Res<super::scrub::ScrubSim>>,
     mut reset: PreviewStageReset,
 ) {
     if started.read().next().is_none() {
@@ -813,8 +817,8 @@ pub fn start_preview(
     let Some(entry) = library.skills.get(id) else {
         return;
     };
-    // Task 11 (scrub) will thread a live charge in; the Play path is uncharged for now.
-    stage_cast(&mut reset, id, &entry.timeline, None);
+    let charge = scrub.map(|s| s.charge);
+    stage_cast(&mut reset, id, &entry.timeline, charge);
 }
 
 /// The editor's Reset heals + repositions the persistent stage (it is not `GameEntity`, so the

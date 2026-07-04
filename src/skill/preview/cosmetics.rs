@@ -373,8 +373,12 @@ fn spawn_cue_effect(
 /// `age_preview_cosmetics`/`fly_preview_cosmetics` are scoped to `EditorMode::Skill` (Finding 1,
 /// Task 10 review) — a cosmetic is only ever created by a cast on the stage, which cannot happen
 /// outside Skill mode (the sim that fires `CueEvent`s is gated too — see `stage::add_obelisk_sim`).
-/// `on_preview_cue` (the observer) needs no explicit gate: it only fires in reaction to a
-/// `CueEvent`, which that same gated sim is the only source of.
+/// ADDITIVELY gated by `super::scrub::sim_unfrozen` (Task 11): these clocks must freeze with the
+/// sim during a scrub session too, exactly like the obelisk sets themselves (see that module's
+/// doc comment) — otherwise a frozen mid-flight bolt's cosmetic trail would keep aging/flying
+/// while the authoritative `Hitbox` sits frozen, visibly desyncing the cosmetic from the sim it's
+/// supposed to represent. `on_preview_cue` (the observer) needs no explicit gate: it only fires
+/// in reaction to a `CueEvent`, which that same gated sim is the only source of.
 ///
 /// `reap_preview_cosmetics` is deliberately left UN-gated. `stage::despawn_stage`
 /// (`OnExit(EditorMode::Skill)`) force-expires (never despawns) any cosmetic still alive when the
@@ -393,7 +397,9 @@ impl Plugin for PreviewCosmeticsPlugin {
         app.add_observer(on_preview_cue)
             .add_systems(
                 FixedUpdate,
-                (age_preview_cosmetics, fly_preview_cosmetics).run_if(in_state(EditorMode::Skill)),
+                (age_preview_cosmetics, fly_preview_cosmetics)
+                    .run_if(in_state(EditorMode::Skill))
+                    .run_if(super::scrub::sim_unfrozen),
             )
             .add_systems(Update, reap_preview_cosmetics);
     }

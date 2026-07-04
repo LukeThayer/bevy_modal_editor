@@ -14,15 +14,22 @@
 //!   comment for why).
 //! - [`cosmetics`] — the cue-driven presentation layer (the grace-ladder invariant lives here).
 //! - [`vfx_bake`] — the CPU param-baking seam `cosmetics` uses for `ParamSource::Charge`.
+//! - [`scrub`] (Task 11) — the sim-backed synchronous scrub (`ScrubSim`/`drive_scrub`), the
+//!   strip's dynamic trailing extent, and the event-marker recorder. See that module's doc
+//!   comment for the full v1 -> v2 adaptation.
 
 pub mod cosmetics;
 pub mod rig;
+pub mod scrub;
 pub mod sockets;
 pub mod stage;
 pub mod vfx_bake;
 
 pub use cosmetics::{CosmeticLifetime, PreviewCosmetic, PreviewFlight};
 pub use rig::PreviewAnimGraph;
+pub use scrub::{
+    MarkerKind, PreviewScrubPlugin, ScrubMarker, ScrubMarkers, ScrubMode, ScrubSim,
+};
 pub use sockets::{resolve_socket, RigSockets};
 pub use stage::{
     ballistic_launch_dir, preview_aim, PreviewCastSkill, PreviewCaster, PreviewControllerPlugin,
@@ -33,8 +40,9 @@ use bevy::prelude::*;
 
 /// Bundles the whole preview stage: the sim composition + registry sync
 /// ([`stage::PreviewSimPlugin`]), the stage lifecycle ([`stage::PreviewControllerPlugin`]), the
-/// rig anim-graph plumbing ([`rig::PreviewRigPlugin`]), the rig socket index, and the cue-driven
-/// cosmetics ([`cosmetics::PreviewCosmeticsPlugin`]). Registered by `SkillModePlugin` under
+/// rig anim-graph plumbing ([`rig::PreviewRigPlugin`]), the rig socket index, the cue-driven
+/// cosmetics ([`cosmetics::PreviewCosmeticsPlugin`]), and the sim-backed scrub
+/// ([`scrub::PreviewScrubPlugin`], Task 11). Registered by `SkillModePlugin` under
 /// `#[cfg(feature = "obelisk")]` — see `crate::skill::SkillModePlugin`.
 pub struct SkillPreviewPlugin;
 
@@ -44,6 +52,7 @@ impl Plugin for SkillPreviewPlugin {
             .add_plugins(stage::PreviewControllerPlugin)
             .add_plugins(rig::PreviewRigPlugin)
             .add_plugins(cosmetics::PreviewCosmeticsPlugin)
+            .add_plugins(scrub::PreviewScrubPlugin)
             .init_resource::<sockets::RigSockets>()
             .add_systems(Update, sockets::index_rig_sockets);
     }

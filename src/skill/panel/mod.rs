@@ -9,3 +9,4 @@
 pub mod behavior;
 pub mod presentation;
 pub mod rules;
+pub mod strip;

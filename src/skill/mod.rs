@@ -210,10 +210,22 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
         .map(|entry| validation::validate_skill(entry, library, effect_library, vfx_library, anim_library))
         .unwrap_or_default();
 
+    // The scrub strip (Task 11): read-only snapshots of the scrub session + its event-marker log
+    // + the live-Play mirror, alongside every other resource this closure reads. `Option`
+    // because a minimal test app may draw this panel without `PreviewScrubPlugin` registered.
+    let scrub = world.get_resource::<preview::ScrubSim>();
+    let scrub_markers = world.get_resource::<preview::ScrubMarkers>();
+    let playhead = world.get_resource::<preview::Playhead>();
+
     let mut save_clicked = false;
     let mut reload_clicked = false;
     let mut overwrite_clicked = false;
     let mut jump_to_effect_mode = false;
+    // Strip out-params (module doc comment on `panel::strip::draw_scrub_strip`): applied to the
+    // real `ScrubSim` after the window closure ends.
+    let mut scrub_new_target: Option<f32> = None;
+    let mut scrub_replay_clicked = false;
+    let mut scrub_new_charge: Option<u8> = None;
 
     egui::Window::new("Skill")
         .id(egui::Id::new("skill_editor_panel"))
@@ -278,6 +290,25 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
                                 ui.label(egui::RichText::new(err).small().color(colors::STATUS_ERROR));
                             }
                             ui.separator();
+
+                            // The scrub strip (Task 11): above the regions — a persistent
+                            // structure-and-time surface, same spirit as v1's bottom-dock
+                            // timeline. Absent (no-op) if the scrub plugin isn't registered.
+                            if let (Some(scrub), Some(markers), Some(playhead)) =
+                                (scrub, scrub_markers, playhead)
+                            {
+                                panel::strip::draw_scrub_strip(
+                                    ui,
+                                    entry,
+                                    scrub,
+                                    markers,
+                                    playhead,
+                                    &mut scrub_new_target,
+                                    &mut scrub_replay_clicked,
+                                    &mut scrub_new_charge,
+                                );
+                                ui.separator();
+                            }
 
                             panel::rules::draw_rules_region(ui, entry, library, &report);
 
@@ -357,6 +388,22 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
         let mut pinned = world.resource_mut::<PinnedWindows>();
         if !pinned.0.remove(&EditorMode::Skill) {
             pinned.0.insert(EditorMode::Skill);
+        }
+    }
+
+    // Apply the strip's out-params (Task 11) to the real `ScrubSim`, now that the window
+    // closure — and with it every read-only borrow of it above — has ended.
+    if (scrub_new_target.is_some() || scrub_replay_clicked || scrub_new_charge.is_some())
+        && let Some(mut scrub) = world.get_resource_mut::<preview::ScrubSim>()
+    {
+        if let Some(t) = scrub_new_target {
+            scrub.target = Some(t);
+        }
+        if scrub_replay_clicked {
+            scrub.replay_requested = true;
+        }
+        if let Some(c) = scrub_new_charge {
+            scrub.charge = c;
         }
     }
 
@@ -485,6 +532,7 @@ fn skill_probe(
     mut game_started: MessageWriter<bevy_editor_game::GameStartedEvent>,
     mut next_game_state: ResMut<NextState<bevy_editor_game::GameState>>,
     mut editor_state: ResMut<EditorState>,
+    mut scrub: ResMut<preview::ScrubSim>,
 ) {
     if !std::env::args().any(|arg| arg == "--skill-probe") {
         return;
@@ -542,6 +590,26 @@ fn skill_probe(
             commands
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk("/tmp/skill_mode_probe.png"));
+        }
+        // Task 11 (sim-backed synchronous scrub): `probe_fireball` is a Projectile-archetype
+        // skill (windup 0.2s, then its "bolt" window opens and crosses the 8 m duel gap at
+        // 25 u/s, ~0.32s flight — landing the true hit around 0.52s). Seeking to 0.35s lands
+        // comfortably MID-FLIGHT: after the window opens, well before the hit. `drive_scrub`'s
+        // synchronous seek loop completes entirely within its own next invocation (a single
+        // `Update` system call), so the freeze is fully settled by the very next frame.
+        202 => {
+            scrub.target = Some(0.35);
+        }
+        204 => {
+            commands
+                .spawn(Screenshot::primary_window())
+                .observe(save_to_disk("/tmp/skill_mode_probe_scrub.png"));
+        }
+        // Hand the sim back to Idle before the rest of the probe continues, so the later
+        // screenshots (validation/behavior/presentation/Play) show the stage exactly as they
+        // did before this task — undisturbed by this demo's frozen mid-cast instant.
+        206 => {
+            *scrub = preview::ScrubSim::default();
         }
         // Task 8: mutate `probe_fireball`'s rules with a deliberately-dangling trigger (a
         // `trigger_skill` naming no skill anywhere in the library) so the next screenshot
