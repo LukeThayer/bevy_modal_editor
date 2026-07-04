@@ -15,14 +15,18 @@
 //! | `on_hit` | no (world-anchored) | no |
 //!
 //! Ordering (timeline order, matching the brief): `on_cast`; then, for every
-//! `CollisionWindow` in `collision_windows` order (Scheduled AND Template — a Template's own
-//! `on_window_{id}` is dead-by-construction once it's only ever emitted, per
-//! `CastTimeline::cues`'s doc comment, but the schema is a "deliberately permissive superset"
-//! and the row still needs to exist for authors editing the .cast.ron by hand to see; `on_end_
-//! {id}` DOES fire for every emitted instance too — `vfx.rs::cue_on_end` fires on every
-//! `HitboxEnded` regardless of `emitted`), `on_window_{id}` then `on_end_{id}`; then, walking
-//! the SAME window order again, each emitter-carrying window's `emit_{target_id}` (deduped —
-//! two windows emitting the same `Template` id list that `emit_` slot once); finally `on_hit`.
+//! `CollisionWindow` in `collision_windows` order (Scheduled AND Template alike — a Template
+//! window's row is NOT dead weight, even though its first-ever spawn is always `emitted` (fires
+//! `emit_{id}`, never `on_window_{id}`, per `CastTimeline::cues`'s doc comment): `end_hitboxes`'
+//! chain-hop arm (Task 12, `timeline/advance.rs`) re-strikes the SAME window id via
+//! `spawn_window_hitbox` with `ChainPayload { emitted: false, hop: hb.hop + 1, .. }` regardless
+//! of that window's own `spawn` kind, so a chaining beam's hop 2+ through a Template window
+//! fires `on_window_{id}` for real — the row is live authorable data on hop 2+, not merely a
+//! hand-editing convenience; `on_end_{id}` DOES fire for every emitted instance too —
+//! `vfx.rs::cue_on_end` fires on every `HitboxEnded` regardless of `emitted`), `on_window_{id}`
+//! then `on_end_{id}`; then, walking the SAME window order again, each emitter-carrying window's
+//! `emit_{target_id}` (deduped — two windows emitting the same `Template` id list that `emit_`
+//! slot once); finally `on_hit`.
 
 use std::collections::HashSet;
 

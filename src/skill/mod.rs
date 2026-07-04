@@ -448,12 +448,24 @@ fn draw_save_header(
 /// scrolls further to the panel's true bottom and screenshots the Presentation region — cue
 /// rows for `on_cast` (bound to the Projectile template's starter "Skill Muzzle" effect),
 /// `on_window_bolt`, `on_end_bolt`, and `on_hit` (bound to "Skill Impact"), each showing its
-/// slot's correct legality affordances — to `/tmp/skill_mode_probe_presentation.png`; then opens
-/// the skill palette (F in Skill mode — here driven directly via `CommandPaletteState`) and
-/// screenshots it to `/tmp/skill_palette_probe.png` before exiting. It's a permanent debug
-/// harness — every later Skill-panel task reuses it to confirm the panel/palette render
-/// correctly without a human driving the UI. No-op (and effectively free — one `env::args()`
-/// scan per frame) unless the flag is present.
+/// slot's correct legality affordances — to `/tmp/skill_mode_probe_presentation.png` (Task 9
+/// review, Finding 1: frame 215 also seeds a throwaway, probe-only `VfxLibrary` preset and
+/// binds it onto the previously-empty `on_window_bolt` row with a charge param, so this
+/// screenshot additionally exercises the new charge-param `ComboBox` picker — deliberately a
+/// FRESH name, not `on_cast`/`on_hit`'s real starter effects, so the probe never permanently
+/// alters what an ordinary new skill's starter cues look like: `VfxLibrary` auto-saves ANY
+/// resource mutation straight to `assets/vfx/*.vfx.ron` — see `vfx::auto_save_vfx_presets` —
+/// so colliding with a real starter effect name here would leak a permanent, misleading
+/// "(effect; also vfx)" ambiguity label into every future skill built from any archetype
+/// template. The probe-only preset's own auto-saved file is deleted after verification each
+/// time this harness is exercised, same discipline as the fake content root at frame 150);
+/// then opens the skill palette (F in Skill mode — here driven directly via
+/// `CommandPaletteState`) and screenshots it to `/tmp/skill_palette_probe.png` before exiting.
+/// It's a permanent debug harness — every later Skill-panel task reuses it to confirm the
+/// panel/palette render correctly without a human driving the UI. No-op (and effectively free —
+/// one `env::args()` scan per frame) unless the flag is present.
+#[allow(clippy::too_many_arguments)] // one Bevy system param per resource touched; same
+                                      // rationale as `panel::presentation::draw_cue_row`.
 fn skill_probe(
     mut next_mode: ResMut<NextState<EditorMode>>,
     mut frame: Local<u32>,
@@ -461,6 +473,7 @@ fn skill_probe(
     mut exit: MessageWriter<AppExit>,
     mut palette: ResMut<crate::ui::CommandPaletteState>,
     mut skill_library: ResMut<SkillLibrary>,
+    mut vfx_library: ResMut<VfxLibrary>,
     mut scroll_hint: ResMut<SkillPanelScrollHint>,
 ) {
     if !std::env::args().any(|arg| arg == "--skill-probe") {
@@ -546,7 +559,37 @@ fn skill_probe(
         // `probe_fireball`'s one window card ("bolt") are both in frame for the next
         // screenshot; Rules' readouts/tier-1/triggers scroll off the top, already covered
         // by the frame-200/213 shots above.
-        215 => scroll_hint.0 = 820.0,
+        //
+        // Task 9 review (Finding 1): also seed a throwaway `VfxLibrary` preset under a
+        // probe-only name (never a real starter/content name — see the fn doc comment for why)
+        // with two params, and bind it onto the previously-empty `on_window_bolt` row with a
+        // charge param naming one of them. Exercises `discoverable_params`/the new `ComboBox`
+        // picker in the frame-234 screenshot below without touching `on_cast`/`on_hit`'s
+        // pre-existing "Skill Muzzle"/"Skill Impact" starter bindings. Harmless to the
+        // frame-230 Behavior screenshot (that region never reads cues/effects).
+        215 => {
+            scroll_hint.0 = 820.0;
+            const PROBE_VFX_PRESET: &str = "Probe Charge Demo Vfx";
+            vfx_library.effects.entry(PROBE_VFX_PRESET.to_string()).or_insert_with(|| bevy_vfx::VfxSystem {
+                params: vec![
+                    bevy_vfx::VfxParam { name: "scale".to_string(), value: bevy_vfx::VfxParamValue::Float(1.0) },
+                    bevy_vfx::VfxParam { name: "intensity".to_string(), value: bevy_vfx::VfxParamValue::Float(1.0) },
+                ],
+                ..Default::default()
+            });
+            if let Some(fireball) = skill_library.skills.get_mut("probe_fireball") {
+                use obelisk_bevy::assets::{CueAttach, CueBinding, CueParam, ParamSource};
+                fireball.timeline.cues.insert(
+                    "on_window_bolt".to_string(),
+                    CueBinding {
+                        effect: Some(PROBE_VFX_PRESET.to_string()),
+                        attach: CueAttach::World,
+                        anim: None,
+                        params: vec![CueParam { param: "scale".to_string(), source: ParamSource::Charge }],
+                    },
+                );
+            }
+        }
         230 => {
             commands
                 .spawn(Screenshot::primary_window())
@@ -558,9 +601,12 @@ fn skill_probe(
         // an `on_cast -> "Skill Muzzle"` cue binding from `templates.rs::cast_and_hit_cues` (set
         // when the skill was inserted at frame 150) plus `on_hit -> "Skill Impact"` — nothing
         // else needs to mutate it for this screenshot to exercise a bound row (Effect picker
-        // showing "Skill Muzzle", no Attach/Anim on `on_hit`) alongside the unbound
-        // `on_window_bolt`/`on_end_bolt` rows (Attach picker legal on the former, neither on the
-        // latter) — every legality affordance from the normative cue table in one shot.
+        // showing "Skill Muzzle", no Attach/Anim on `on_hit`) alongside `on_end_bolt` (neither
+        // legal) — every legality affordance from the normative cue table in one shot. Task 9
+        // review (Finding 1): frame 215 above additionally binds `on_window_bolt` (previously
+        // "(none)") to a fresh probe-only vfx preset with a charge param, so this row now ALSO
+        // shows a Charge Params `ComboBox` (selected: "scale") instead of free text, alongside
+        // its pre-existing Attach picker.
         232 => scroll_hint.0 = 1500.0,
         234 => {
             commands
