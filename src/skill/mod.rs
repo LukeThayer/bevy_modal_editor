@@ -19,6 +19,7 @@ pub mod cue_slots;
 pub mod edits;
 pub mod library;
 pub mod panel;
+pub mod preview;
 pub mod readouts;
 pub mod save;
 pub mod templates;
@@ -30,6 +31,7 @@ pub use library::{
     scan_content_root, skills_referencing, unique_id, PendingContentRoots, RegisterObeliskContentExt,
     SkillEntry, SkillLibrary,
 };
+pub use preview::SkillPreviewPlugin;
 pub use save::{reload_skill, save_skill, save_skill_overwrite, SaveError, SaveTarget};
 pub use templates::SkillArchetype;
 pub use validation::{validate_skill, Problem, ValidationReport};
@@ -58,7 +60,12 @@ impl Plugin for SkillModePlugin {
             .init_resource::<SkillSaveState>()
             .add_systems(Startup, library::scan_registered_content_roots)
             .add_systems(Update, skill_probe)
-            .register_validation(ValidationRule { name: "skill_rules", validate: skill_validation_rule });
+            .register_validation(ValidationRule { name: "skill_rules", validate: skill_validation_rule })
+            // Task 10: the deterministic preview stage — engine/logic (obelisk sim composition +
+            // stage lifecycle + cue-driven cosmetics), NOT UI, so it lives on this plugin (the
+            // panel itself stays on `ui::skill_editor::SkillEditorPlugin`, per the panel-plugin
+            // convention noted in the module doc comment above).
+            .add_plugins(SkillPreviewPlugin);
     }
 }
 
@@ -475,6 +482,8 @@ fn skill_probe(
     mut skill_library: ResMut<SkillLibrary>,
     mut vfx_library: ResMut<VfxLibrary>,
     mut scroll_hint: ResMut<SkillPanelScrollHint>,
+    mut game_started: MessageWriter<bevy_editor_game::GameStartedEvent>,
+    mut next_game_state: ResMut<NextState<bevy_editor_game::GameState>>,
 ) {
     if !std::env::args().any(|arg| arg == "--skill-probe") {
         return;
@@ -619,6 +628,34 @@ fn skill_probe(
             commands
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk("/tmp/skill_palette_probe.png"));
+        }
+        // Task 10: close the palette (it would otherwise cover the viewport) and trigger Play —
+        // directly, rather than via `PlayEvent`/`GamePlugin` (this binary never adds
+        // `GamePlugin`, matching arena_editor's own headless-preview convention of driving the
+        // stage straight off `GameStartedEvent`) — so the preview stage's `start_preview` casts
+        // `probe_fireball` (open since frame 150) on the persistent caster+dummy duel.
+        320 => {
+            palette.open = false;
+            next_game_state.set(bevy_editor_game::GameState::Playing);
+            game_started.write(bevy_editor_game::GameStartedEvent);
+        }
+        // Drop to View mode so the Skill panel (which occupies the right half of the window)
+        // doesn't obscure the dummy standing at +X — none of the preview stage's systems are
+        // gated on `EditorMode` (deliberately: the stage is a persistent, session-long fixture,
+        // not a Skill-mode-exclusive one), so Play keeps running exactly the same underneath.
+        325 => next_mode.set(EditorMode::View),
+        // Two viewport screenshots straddling the cast's flight (windup 0.2s + ~0.3s to cross
+        // the 8 m duel at the projectile template's 25 u/s — real-time frames, not fixed sim
+        // ticks, so these are generous estimates, not an exact tick count).
+        335 => {
+            commands
+                .spawn(Screenshot::primary_window())
+                .observe(save_to_disk("/tmp/skill_mode_probe_play_early.png"));
+        }
+        365 => {
+            commands
+                .spawn(Screenshot::primary_window())
+                .observe(save_to_disk("/tmp/skill_mode_probe_play.png"));
         }
         400 => {
             exit.write(AppExit::Success);
