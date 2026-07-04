@@ -15,6 +15,7 @@
 //! `SkillModePlugin` here owns non-UI systems: the `SkillLibrary`/content-root
 //! machinery and the probe; it is registered from `EditorPlugin::build`.
 
+pub mod cue_slots;
 pub mod edits;
 pub mod library;
 pub mod panel;
@@ -23,6 +24,7 @@ pub mod save;
 pub mod templates;
 pub mod validation;
 
+pub use cue_slots::{cue_slots, CueSlot};
 pub use library::{
     delete_skill, duplicate_skill, insert_new_skill, rename_skill, scan_and_merge_root,
     scan_content_root, skills_referencing, unique_id, PendingContentRoots, RegisterObeliskContentExt,
@@ -44,7 +46,7 @@ use bevy_vfx::VfxLibrary;
 
 use crate::editor::{EditorMode, EditorState, PanelSide, PinnedWindows};
 use crate::effects::EffectLibrary;
-use crate::ui::theme::{colors, draw_pin_button, panel as panel_theme, panel_frame};
+use crate::ui::theme::{colors, draw_pin_button, panel as panel_theme, panel_frame, section_header};
 
 pub struct SkillModePlugin;
 
@@ -204,6 +206,7 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
     let mut save_clicked = false;
     let mut reload_clicked = false;
     let mut overwrite_clicked = false;
+    let mut jump_to_effect_mode = false;
 
     egui::Window::new("Skill")
         .id(egui::Id::new("skill_editor_panel"))
@@ -275,11 +278,17 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
                             panel::behavior::draw_behavior_region(ui, entry, &report);
 
                             ui.separator();
-                            ui.label(
-                                egui::RichText::new("Presentation — lands in Task 9")
-                                    .color(colors::TEXT_SECONDARY)
-                                    .small(),
-                            );
+                            section_header(ui, "Presentation", true, |ui| {
+                                panel::presentation::draw_presentation_region(
+                                    ui,
+                                    entry,
+                                    effect_library,
+                                    vfx_library,
+                                    anim_library,
+                                    &report,
+                                    &mut jump_to_effect_mode,
+                                );
+                            });
                         }
                         (None, _) | (_, None) => {
                             ui.label(
@@ -342,6 +351,17 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
         if !pinned.0.remove(&EditorMode::Skill) {
             pinned.0.insert(EditorMode::Skill);
         }
+    }
+
+    // Presentation region's "\u{2192} Effect mode" button (Task 9, kept minimal per the brief):
+    // pin the Skill panel FIRST (unconditional insert, not the pin button's toggle — the whole
+    // point is the round trip works even if the panel wasn't already pinned) so it survives the
+    // mode switch, then switch modes. The Effect panel itself finds nothing selected and shows
+    // its own empty state; the user picks the preset by name there themselves (see the module
+    // doc comment on `panel::presentation` for why this stays this minimal in v1).
+    if jump_to_effect_mode {
+        world.resource_mut::<PinnedWindows>().0.insert(EditorMode::Skill);
+        world.resource_mut::<NextState<EditorMode>>().set(EditorMode::Effect);
     }
 }
 
@@ -424,8 +444,12 @@ fn draw_save_header(
 /// runs every frame, so this exercises the trigger card's inline blocking message AND the
 /// header's disabled Save button end-to-end; then (Task 7) scrolls the panel down via
 /// `SkillPanelScrollHint` and screenshots the Behavior region — Acquisition card +
-/// `probe_fireball`'s one window card — to `/tmp/skill_mode_probe_behavior.png`; then opens the
-/// skill palette (F in Skill mode — here driven directly via `CommandPaletteState`) and
+/// `probe_fireball`'s one window card — to `/tmp/skill_mode_probe_behavior.png`; then (Task 9)
+/// scrolls further to the panel's true bottom and screenshots the Presentation region — cue
+/// rows for `on_cast` (bound to the Projectile template's starter "Skill Muzzle" effect),
+/// `on_window_bolt`, `on_end_bolt`, and `on_hit` (bound to "Skill Impact"), each showing its
+/// slot's correct legality affordances — to `/tmp/skill_mode_probe_presentation.png`; then opens
+/// the skill palette (F in Skill mode — here driven directly via `CommandPaletteState`) and
 /// screenshots it to `/tmp/skill_palette_probe.png` before exiting. It's a permanent debug
 /// harness — every later Skill-panel task reuses it to confirm the panel/palette render
 /// correctly without a human driving the UI. No-op (and effectively free — one `env::args()`
@@ -527,6 +551,21 @@ fn skill_probe(
             commands
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk("/tmp/skill_mode_probe_behavior.png"));
+        }
+        // Task 9: Presentation is the panel's last region, below every window card — an
+        // intentionally oversized offset clamps `ScrollArea` to the true bottom regardless of
+        // exact content height. `probe_fireball` (`SkillArchetype::Projectile`) already carries
+        // an `on_cast -> "Skill Muzzle"` cue binding from `templates.rs::cast_and_hit_cues` (set
+        // when the skill was inserted at frame 150) plus `on_hit -> "Skill Impact"` — nothing
+        // else needs to mutate it for this screenshot to exercise a bound row (Effect picker
+        // showing "Skill Muzzle", no Attach/Anim on `on_hit`) alongside the unbound
+        // `on_window_bolt`/`on_end_bolt` rows (Attach picker legal on the former, neither on the
+        // latter) — every legality affordance from the normative cue table in one shot.
+        232 => scroll_hint.0 = 1500.0,
+        234 => {
+            commands
+                .spawn(Screenshot::primary_window())
+                .observe(save_to_disk("/tmp/skill_mode_probe_presentation.png"));
         }
         235 => scroll_hint.0 = 0.0,
         250 => palette.open_skill_preset(),
