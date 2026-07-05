@@ -80,7 +80,7 @@ bevy_gaussian_splatting = { git = "https://github.com/Nub/bevy_gaussian_splattin
 # `obelisk_bevy::testkit` (`EventRecorder`/`EventRecorderPlugin`/`init_test_obelisk`) —
 # Task 10's headless preview-stage tests assert on the sim's real event stream the same
 # way obelisk-bevy's own suite does.
-obelisk-bevy = { git = "https://github.com/LukeThayer/bevy-obelisk", rev = "ebbecc2ac55daba5b109b0ac44ea2970cbf9060b", optional = true, features = ["test-support"] }
+obelisk-bevy = { git = "https://github.com/LukeThayer/bevy-obelisk", branch = "main", optional = true, features = ["test-support"] } # branch=main (57662ef) to unify with obelisk-arena's obelisk-bevy pin (no skew)
 # stat_core is a transitive dep of obelisk-bevy (same git+rev — Cargo dedupes it to one
 # instance, so `stat_core::Skill` here IS the same type obelisk-bevy's rules pipeline
 # consumes). Pinned to the exact rev obelisk-bevy @ ebbecc2a resolves against (see the
