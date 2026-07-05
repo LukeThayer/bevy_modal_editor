@@ -15,6 +15,8 @@ mod insert;
 mod material_preset;
 mod mesh_shape_picker;
 mod particle_preset;
+#[cfg(feature = "obelisk")]
+mod skill_preset;
 
 use std::any::TypeId;
 use std::path::Path;
@@ -75,6 +77,9 @@ pub enum PaletteMode {
     ParticlePreset,
     /// Browse/apply/insert effect presets
     EffectPreset,
+    /// Browse/open/create skills (obelisk Skill mode — only meaningful with
+    /// `--features obelisk`; rendered by a dedicated system, see `skill_preset`)
+    SkillPreset,
     /// Browse asset files (load/save scene, insert GLTF, pick texture)
     AssetBrowser,
     /// Pick a mesh shape for VFX mesh particles
@@ -203,6 +208,11 @@ impl CommandPaletteState {
     /// Open the palette in EffectPreset mode
     pub fn open_effect_preset(&mut self) {
         self.open_mode(PaletteMode::EffectPreset);
+    }
+
+    /// Open the palette in SkillPreset mode
+    pub fn open_skill_preset(&mut self) {
+        self.open_mode(PaletteMode::SkillPreset);
     }
 
     /// Open the palette in MeshShapePicker mode
@@ -369,6 +379,13 @@ impl Plugin for CommandPalettePlugin {
                 EguiPrimaryContextPass,
                 (draw_command_palette, draw_help_window, draw_custom_mark_dialog, draw_rename_scene_dialog, draw_create_prefab_dialog),
             );
+
+        // Skill palette (obelisk Skill mode) — its own system rather than threaded
+        // through `draw_command_palette`'s `ModeParams`, so non-`obelisk` builds
+        // never need `SkillLibrary` in scope. See `PaletteMode::SkillPreset`'s
+        // no-op arm in `draw_command_palette`.
+        #[cfg(feature = "obelisk")]
+        app.add_systems(EguiPrimaryContextPass, skill_preset::draw_skill_preset_palette_system);
     }
 }
 
@@ -417,6 +434,10 @@ fn handle_palette_toggle(
         }
         if mode == EditorMode::Effect {
             state.open_effect_preset();
+            return;
+        }
+        if mode == EditorMode::Skill {
+            state.open_skill_preset();
             return;
         }
         if mode != EditorMode::Hierarchy {
@@ -638,6 +659,14 @@ fn draw_command_palette(
                 selected_effect,
                 &mut bevy_commands,
             );
+        }
+        PaletteMode::SkillPreset => {
+            // Actually rendered by `skill_preset::draw_skill_preset_palette_system`
+            // (own system, registered only under `--features obelisk` — see
+            // `CommandPalettePlugin::build`), so non-`obelisk` builds never need to
+            // know `SkillLibrary` exists. This arm just satisfies the match and
+            // leaves `contexts`/`mp` untouched.
+            return Ok(());
         }
         PaletteMode::MeshShapePicker => {
             let ctx = contexts.ctx_mut()?;

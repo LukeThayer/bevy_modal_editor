@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/bevy_outliner", "crates/bevy_spline_3d", "crates/bevy_grid_shader", "crates/bevy_channel_mat", "crates/bevy_editor_game", "crates/bevy_procedural", "crates/bevy_vfx", "crates/marble_demo", "crates/fp_demo", "crates/ai_demo"]
+members = [".", "crates/bevy_outliner", "crates/bevy_spline_3d", "crates/bevy_grid_shader", "crates/bevy_channel_mat", "crates/bevy_editor_game", "crates/bevy_procedural", "crates/bevy_vfx", "crates/bevy_effect", "crates/marble_demo", "crates/ai_demo"]
+# fp_demo depends on bevy_locomotion via an absolute path into /home/zach/…,
+# which breaks manifest loading for the entire workspace on other machines.
+# Excluded until that dependency is made portable (git or relative path).
+exclude = ["crates/fp_demo"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
@@ -21,6 +25,7 @@ bevy_channel_mat = { path = "crates/bevy_channel_mat" }
 bevy_editor_game = { path = "crates/bevy_editor_game" }
 bevy_procedural = { path = "crates/bevy_procedural" }
 bevy_vfx = { path = "crates/bevy_vfx" }
+bevy_effect = { path = "crates/bevy_effect" }
 bevy_rerecast = "0.4"
 avian_rerecast = "0.4"
 bevy_landmass = "0.11"
@@ -57,6 +62,7 @@ bevy_channel_mat.workspace = true
 bevy_editor_game.workspace = true
 bevy_procedural.workspace = true
 bevy_vfx.workspace = true
+bevy_effect.workspace = true
 bevy_rerecast.workspace = true
 avian_rerecast.workspace = true
 bevy_landmass.workspace = true
@@ -67,6 +73,32 @@ dirs = "6"
 fuzzy-matcher = "0.3"
 egui_commonmark = "0.22"
 bevy_gaussian_splatting = { git = "https://github.com/Nub/bevy_gaussian_splatting.git", branch = "main", default-features = false, features = ["planar", "io_ply", "io_flexbuffers", "buffer_storage", "sort_rayon"] }
+# Optional: obelisk-bevy integration (Skill mode). Pinned to the current tip of
+# `main` at the time this dependency was added — bump the rev deliberately when
+# picking up upstream changes.
+# `test-support` (additive to the crate's own `default = ["present"]`) unlocks
+# `obelisk_bevy::testkit` (`EventRecorder`/`EventRecorderPlugin`/`init_test_obelisk`) —
+# Task 10's headless preview-stage tests assert on the sim's real event stream the same
+# way obelisk-bevy's own suite does.
+obelisk-bevy = { git = "https://github.com/LukeThayer/bevy-obelisk", rev = "ebbecc2ac55daba5b109b0ac44ea2970cbf9060b", optional = true, features = ["test-support"] }
+# stat_core is a transitive dep of obelisk-bevy (same git+rev — Cargo dedupes it to one
+# instance, so `stat_core::Skill` here IS the same type obelisk-bevy's rules pipeline
+# consumes). Pinned to the exact rev obelisk-bevy @ ebbecc2a resolves against (see the
+# `stat_core` entry in Cargo.lock) — bump only in lockstep with the obelisk-bevy rev above.
+stat_core = { git = "ssh://git@github.com/vothuul/obelisk.git", rev = "bf9f026", optional = true }
+# loot_core is a sibling crate in the same repo/rev as stat_core (transitive dep already, per
+# Cargo.lock) — declared directly here (Task 6) so the editor can reach its `EnumVariants` trait
+# (`stat_core` uses it internally for `ApplicationTarget`/`DamageType`/etc. but doesn't
+# re-export it) for the Rules region's dropdown pickers. Same git+rev as stat_core; Cargo dedupes
+# it to the one instance stat_core's own types already implement the trait against.
+loot_core = { git = "ssh://git@github.com/vothuul/obelisk.git", rev = "bf9f026", optional = true }
+# TOML (de)serialization for `config/skills/*.toml` content-root files (stat_core's own
+# `config::parse_skills` takes a `&str`, so the editor does its own file I/O + toml parse).
+toml = { version = "0.8", optional = true }
+# Format-preserving TOML editing (Task 8's `save_skill`): patches only the editor-owned fields
+# of an existing rules TOML in place, leaving comments/order/every other field untouched. Pinned
+# to 0.22 to match the version `toml 0.8` already resolves (see Cargo.lock) — no duplicate copy.
+toml_edit = { version = "0.22", optional = true }
 
 
 [dev-dependencies]
@@ -75,6 +107,8 @@ bevy = { workspace = true, features = ["dynamic_linking"] }
 [features]
 default = []
 dynamic = ["bevy/dynamic_linking"]
+# Enables EditorMode::Skill (K key, right panel) and the obelisk-bevy integration.
+obelisk = ["dep:obelisk-bevy", "dep:stat_core", "dep:loot_core", "dep:toml", "dep:toml_edit"]
 
 [[example]]
 name = "simple"

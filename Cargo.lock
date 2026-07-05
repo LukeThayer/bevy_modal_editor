@@ -921,6 +921,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_effect"
+version = "0.1.0"
+dependencies = [
+ "avian3d",
+ "bevy",
+ "bevy_vfx",
+ "ron 0.8.1",
+ "serde",
+]
+
+[[package]]
 name = "bevy_egui"
 version = "0.39.0"
 source = "git+https://github.com/vladbat00/bevy_egui?branch=main#81904dac9a09d49563e39962bf3039afc47016dc"
@@ -974,31 +985,6 @@ checksum = "0f89146a8fcbfe47310fc929ee762dd3b08d4de3e3371c601529cfa8eeb861de"
 dependencies = [
  "bevy_macro_utils",
  "encase_derive_impl",
-]
-
-[[package]]
-name = "bevy_enhanced_input"
-version = "0.23.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3eb80814d4c89323dd5489a6e85e5f83ea0d62127541822e2978d7b2c81b9d7"
-dependencies = [
- "bevy",
- "bevy_enhanced_input_macros",
- "bitflags 2.10.0",
- "log",
- "smallvec",
- "variadics_please",
-]
-
-[[package]]
-name = "bevy_enhanced_input_macros"
-version = "0.23.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03a283d2eb7bf4ebec559f337ba88ccb246ec17e1237fcfc3ad78a2b9b715614"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.114",
 ]
 
 [[package]]
@@ -1370,16 +1356,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bevy_locomotion"
-version = "0.1.2"
-dependencies = [
- "avian3d",
- "bevy",
- "bevy_enhanced_input",
- "rand 0.8.5",
-]
-
-[[package]]
 name = "bevy_log"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1472,6 +1448,7 @@ dependencies = [
  "bevy",
  "bevy_channel_mat",
  "bevy_editor_game",
+ "bevy_effect",
  "bevy_egui",
  "bevy_gaussian_splatting",
  "bevy_grid_shader",
@@ -1486,8 +1463,13 @@ dependencies = [
  "egui_commonmark",
  "fuzzy-matcher",
  "landmass_rerecast",
+ "loot_core",
+ "obelisk-bevy",
  "ron 0.8.1",
  "serde",
+ "stat_core",
+ "toml",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]
@@ -3470,19 +3452,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fp_demo"
-version = "0.1.0"
-dependencies = [
- "avian3d",
- "bevy",
- "bevy_editor_game",
- "bevy_locomotion",
- "bevy_modal_editor",
- "ron 0.8.1",
- "serde",
-]
-
-[[package]]
 name = "fsevent-sys"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4638,6 +4607,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "loot_core"
+version = "0.1.0"
+source = "git+ssh://git@github.com/vothuul/obelisk.git?rev=bf9f026#bf9f02611691da3ff509bef982077ea67218c578"
+dependencies = [
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "mach2"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5106,6 +5087,24 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "obelisk-bevy"
+version = "0.1.0"
+source = "git+https://github.com/LukeThayer/bevy-obelisk?rev=ebbecc2ac55daba5b109b0ac44ea2970cbf9060b#ebbecc2ac55daba5b109b0ac44ea2970cbf9060b"
+dependencies = [
+ "avian3d",
+ "bevy",
+ "loot_core",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "ron 0.8.1",
+ "serde",
+ "skill_tree",
+ "stat_core",
+ "tables_core",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -6418,6 +6417,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6481,6 +6489,20 @@ dependencies = [
  "pulldown-cmark 0.9.6",
  "tempfile",
  "walkdir",
+]
+
+[[package]]
+name = "skill_tree"
+version = "0.1.0"
+source = "git+ssh://git@github.com/vothuul/obelisk.git?rev=bf9f026#bf9f02611691da3ff509bef982077ea67218c578"
+dependencies = [
+ "loot_core",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "serde",
+ "stat_core",
+ "thiserror 1.0.69",
+ "toml",
 ]
 
 [[package]]
@@ -6621,6 +6643,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "stat_core"
+version = "0.1.0"
+source = "git+ssh://git@github.com/vothuul/obelisk.git?rev=bf9f026#bf9f02611691da3ff509bef982077ea67218c578"
+dependencies = [
+ "loot_core",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "toml",
+]
+
+[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6709,6 +6744,17 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-io-kit",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "tables_core"
+version = "0.1.0"
+source = "git+ssh://git@github.com/vothuul/obelisk.git?rev=bf9f026#bf9f02611691da3ff509bef982077ea67218c578"
+dependencies = [
+ "rand 0.8.5",
+ "serde",
+ "thiserror 1.0.69",
+ "toml",
 ]
 
 [[package]]
@@ -6868,10 +6914,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "0.8.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
+dependencies = [
+ "serde",
+ "serde_spanned",
+ "toml_datetime 0.6.11",
+ "toml_edit 0.22.27",
+]
+
+[[package]]
 name = "toml_datetime"
 version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "toml_datetime"
@@ -6895,6 +6956,20 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
+version = "0.22.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
+dependencies = [
+ "indexmap",
+ "serde",
+ "serde_spanned",
+ "toml_datetime 0.6.11",
+ "toml_write",
+ "winnow 0.7.14",
+]
+
+[[package]]
+name = "toml_edit"
 version = "0.23.10+spec-1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84c8b9f757e028cee9fa244aea147aab2a9ec09d5325a9b01e0a49730c2b5269"
@@ -6913,6 +6988,12 @@ checksum = "a3198b4b0a8e11f09dd03e133c0280504d0801269e9afa46362ffde1cbeebf44"
 dependencies = [
  "winnow 0.7.14",
 ]
+
+[[package]]
+name = "toml_write"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "tracing"

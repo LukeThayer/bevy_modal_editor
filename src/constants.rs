@@ -9,21 +9,13 @@ use bevy::prelude::*;
 pub mod primitive_colors {
     use super::*;
 
-    pub const CUBE: Color = Color::srgb(0.8, 0.7, 0.6);
-    pub const SPHERE: Color = Color::srgb(0.6, 0.7, 0.8);
-    pub const CYLINDER: Color = Color::srgb(0.7, 0.8, 0.6);
-    pub const CAPSULE: Color = Color::srgb(0.8, 0.6, 0.7);
-    pub const PLANE: Color = Color::srgb(0.6, 0.6, 0.8);
-
-    /// Get the default color for a primitive shape
+    /// Get the default color for a primitive shape.
+    ///
+    /// The values live on `bevy_effect::PrimitiveShape::default_color` now
+    /// (the shape moved into the effect runtime crate); this delegates so
+    /// there is a single source of truth.
     pub fn for_shape(shape: crate::scene::PrimitiveShape) -> Color {
-        match shape {
-            crate::scene::PrimitiveShape::Cube => CUBE,
-            crate::scene::PrimitiveShape::Sphere => SPHERE,
-            crate::scene::PrimitiveShape::Cylinder => CYLINDER,
-            crate::scene::PrimitiveShape::Capsule => CAPSULE,
-            crate::scene::PrimitiveShape::Plane => PLANE,
-        }
+        shape.default_color()
     }
 }
 

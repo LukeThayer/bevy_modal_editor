@@ -16,6 +16,8 @@ mod material_editor;
 pub mod material_preview;
 mod mesh_model_panel;
 mod panels;
+#[cfg(feature = "obelisk")]
+mod skill_editor;
 mod vfx_editor;
 mod reflect_editor;
 mod settings;
@@ -101,5 +103,10 @@ impl Plugin for UiPlugin {
             ))
             // Validation
             .add_plugins(validation::ValidationPlugin);
+
+        // Skill mode panel (obelisk integration). See src/skill/mod.rs for
+        // the non-UI SkillModePlugin (probe + future logic systems).
+        #[cfg(feature = "obelisk")]
+        app.add_plugins(skill_editor::SkillEditorPlugin);
     }
 }

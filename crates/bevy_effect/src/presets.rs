@@ -2,7 +2,8 @@
 
 use bevy::prelude::*;
 
-use super::data::*;
+use crate::data::*;
+use crate::primitive::PrimitiveShape;
 
 /// Return the built-in default effect presets as `(name, marker)` pairs.
 pub fn default_presets() -> Vec<(&'static str, EffectMarker)> {
@@ -74,7 +75,7 @@ fn pulsing_beacon() -> EffectMarker {
                 actions: vec![
                     EffectAction::SpawnPrimitive {
                         tag: "orb".into(),
-                        shape: crate::scene::PrimitiveShape::Sphere,
+                        shape: PrimitiveShape::Sphere,
                         offset: Vec3::ZERO,
                         material: None,
                         rigid_body: None,

@@ -106,6 +106,7 @@ fn draw_status_bar(
                     EditorMode::Particle => "PARTICLE",
                     EditorMode::AI => "AI",
                     EditorMode::Effect => "EFFECT",
+                    EditorMode::Skill => "SKILL",
                 };
                 let mode_color = match mode.get() {
                     EditorMode::View => colors::ACCENT_BLUE,
@@ -119,6 +120,7 @@ fn draw_status_bar(
                     EditorMode::Particle => colors::ACCENT_GREEN,
                     EditorMode::AI => colors::ACCENT_CYAN,
                     EditorMode::Effect => colors::ACCENT_ORANGE,
+                    EditorMode::Skill => colors::ACCENT_PURPLE,
                 };
                 ui.label(
                     egui::RichText::new(format!("[{}]", mode_text))
@@ -316,19 +318,24 @@ fn get_hints_for_mode(
     snap_submode: SnapSubMode,
 ) -> Vec<(&'static str, &'static str)> {
     match mode {
-        EditorMode::View => vec![
-            ("E", "Edit"),
-            ("I", "Insert"),
-            ("O", "Inspect"),
-            ("M", "Material"),
-            ("V", "Camera"),
-            ("N", "Particle"),
-            ("H", "Hierarchy"),
-            ("B", "Model"),
-            (";", "AI"),
-            ("J", "Effect"),
-            ("?", "Help"),
-        ],
+        EditorMode::View => {
+            let mut hints = vec![
+                ("E", "Edit"),
+                ("I", "Insert"),
+                ("O", "Inspect"),
+                ("M", "Material"),
+                ("V", "Camera"),
+                ("N", "Particle"),
+                ("H", "Hierarchy"),
+                ("B", "Model"),
+                (";", "AI"),
+                ("J", "Effect"),
+            ];
+            #[cfg(feature = "obelisk")]
+            hints.push(("K", "Skill"));
+            hints.push(("?", "Help"));
+            hints
+        }
         EditorMode::Edit => {
             match transform_op {
                 TransformOperation::None => vec![
@@ -433,6 +440,9 @@ fn get_hints_for_mode(
             ("Play/Stop", "Preview"),
             ("Esc", "View"),
         ],
+        // Placeholder panel (Task 5 fills in SkillLibrary hints); requires
+        // the `obelisk` feature to be reachable at all.
+        EditorMode::Skill => vec![("Esc", "View")],
     }
 }
 

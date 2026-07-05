@@ -81,7 +81,14 @@ fn save_preset_to_disk(name: &str, system: &VfxSystem) {
 }
 
 fn load_presets_from_disk(library: &mut VfxLibrary) {
-    let dir = Path::new(VFX_DIR);
+    load_vfx_presets_from_dir(library, Path::new(VFX_DIR));
+}
+
+/// Load every `*.vfx.ron` preset in `dir` into `library` (name = filename minus the
+/// extension). Public so content-root registration (Skill mode, Task 5) can feed a
+/// root's `assets/vfx/` subtree through the same loading path the editor's own
+/// `assets/vfx/` directory uses — see `skill::library::register_obelisk_content`.
+pub fn load_vfx_presets_from_dir(library: &mut VfxLibrary, dir: &Path) {
     if !dir.is_dir() {
         return;
     }

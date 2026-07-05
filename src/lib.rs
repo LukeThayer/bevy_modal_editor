@@ -55,6 +55,8 @@ pub mod vfx;
 pub mod prefabs;
 pub mod scene;
 pub mod selection;
+#[cfg(feature = "obelisk")]
+pub mod skill;
 pub mod ui;
 pub mod utils;
 

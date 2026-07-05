@@ -11,7 +11,7 @@ use bevy_grid_shader::GridMaterial;
 use super::blockout::{spawn_arch, spawn_lshape, spawn_ramp, spawn_stairs, GridMat};
 use super::SceneEntity;
 use crate::commands::TakeSnapshotCommand;
-use crate::constants::{light_colors, physics, primitive_colors};
+use crate::constants::{light_colors, physics};
 use crate::materials::grid::GridMaterialProps;
 use crate::effects::{EffectLibrary, EffectMarker};
 use bevy_vfx::{VfxLibrary, VfxSystem};
@@ -156,64 +156,13 @@ impl PrimitiveMaterial {
     }
 }
 
-/// Available primitive shapes
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Reflect, Default)]
-pub enum PrimitiveShape {
-    #[default]
-    Cube,
-    Sphere,
-    Cylinder,
-    Capsule,
-    Plane,
-}
-
-impl PrimitiveShape {
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            PrimitiveShape::Cube => "Cube",
-            PrimitiveShape::Sphere => "Sphere",
-            PrimitiveShape::Cylinder => "Cylinder",
-            PrimitiveShape::Capsule => "Capsule",
-            PrimitiveShape::Plane => "Plane",
-        }
-    }
-
-    /// Create the mesh for this primitive shape (with tangents for normal mapping)
-    pub fn create_mesh(&self) -> Mesh {
-        let mesh = match self {
-            PrimitiveShape::Cube => Mesh::from(Cuboid::new(1.0, 1.0, 1.0)),
-            PrimitiveShape::Sphere => Mesh::from(Sphere::new(0.5)),
-            PrimitiveShape::Cylinder => Mesh::from(Cylinder::new(0.5, 1.0)),
-            PrimitiveShape::Capsule => Mesh::from(Capsule3d::new(0.25, 0.5)),
-            PrimitiveShape::Plane => Plane3d::default().mesh().size(2.0, 2.0).build(),
-        };
-        mesh.with_generated_tangents().expect("primitive mesh should support tangent generation")
-    }
-
-    /// Get the default color for this primitive shape
-    pub fn default_color(&self) -> Color {
-        primitive_colors::for_shape(*self)
-    }
-
-    /// Create a standard material for this primitive shape
-    pub fn create_material(&self) -> StandardMaterial {
-        StandardMaterial {
-            base_color: self.default_color(),
-            ..default()
-        }
-    }
-
-    /// Create the collider for this primitive shape
-    pub fn create_collider(&self) -> Collider {
-        match self {
-            PrimitiveShape::Cube => Collider::cuboid(1.0, 1.0, 1.0),
-            PrimitiveShape::Sphere => Collider::sphere(0.5),
-            PrimitiveShape::Cylinder => Collider::cylinder(0.5, 1.0),
-            PrimitiveShape::Capsule => Collider::capsule(0.25, 0.5),
-            PrimitiveShape::Plane => Collider::cuboid(2.0, 0.01, 2.0),
-        }
-    }
-}
+/// Available primitive shapes.
+///
+/// Moved into `bevy_effect` (the effect runtime's `SpawnPrimitive` action
+/// embeds it); re-exported here under its old path. Its reflected type path
+/// is pinned to `bevy_modal_editor::scene::primitives::PrimitiveShape` inside
+/// the crate, so saved scenes are unaffected.
+pub use bevy_effect::PrimitiveShape;
 
 /// The kind of entity to spawn
 #[derive(Debug, Clone)]

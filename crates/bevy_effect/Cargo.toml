@@ -1,0 +1,20 @@
+[package]
+name = "bevy_effect"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Data-driven effect sequencer runtime for Bevy (triggers, actions, tweens) with Avian3D physics support"
+repository.workspace = true
+keywords = ["bevy", "effects", "sequencer", "avian3d", "gamedev"]
+categories = ["game-development"]
+
+[dependencies]
+avian3d.workspace = true
+bevy.workspace = true
+bevy_vfx.workspace = true
+serde.workspace = true
+ron.workspace = true
+
+[lints.clippy]
+type_complexity = "allow"
+too_many_arguments = "allow"

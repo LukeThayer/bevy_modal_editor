@@ -60,6 +60,14 @@ const COMPACT_SHADER_SRC: &str = include_str!("shaders/compact.wgsl");
 const BILLBOARD_SHADER_SRC: &str = include_str!("shaders/billboard.wgsl");
 
 /// Auto-insert `VfxStartTime` on VFX systems that don't have one yet.
+///
+/// Uses `try_insert` (silenced on a despawned entity), not `insert` (which defaults to Bevy's
+/// GLOBAL panic-on-error command handler, unlike `remove`'s own `warn`-by-default): a caller
+/// driving many sim ticks synchronously within one render frame (e.g. a scrub-strip seek — see
+/// `bevy_modal_editor`'s `skill::preview::scrub::drive_scrub`) can spawn AND fully expire a
+/// `VfxSystem` entity inside that same frame, racing this system's queued command against the
+/// entity's despawn on an ordinary "the entity vanished in a parallel/adjacent system" basis —
+/// exactly the case `EntityCommands::try_insert`'s own doc example describes.
 fn vfx_init_start_time(
     mut commands: Commands,
     time: Res<Time>,
@@ -67,7 +75,7 @@ fn vfx_init_start_time(
 ) {
     let t = time.elapsed_secs();
     for entity in &query {
-        commands.entity(entity).insert(VfxStartTime(t));
+        commands.entity(entity).try_insert(VfxStartTime(t));
     }
 }
 

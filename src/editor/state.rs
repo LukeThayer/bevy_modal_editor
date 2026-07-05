@@ -43,6 +43,14 @@ pub enum EditorMode {
     AI,
     /// Effect mode: edit effect sequences on selected entity
     Effect,
+    /// Skill mode: edit obelisk skill definitions on selected entity.
+    ///
+    /// This variant always exists (a feature-gated enum variant would poison
+    /// every exhaustive match on `EditorMode` for non-`obelisk` builds), but
+    /// it is only reachable when built with `--features obelisk`: the K-key
+    /// handler, panel plugin, and all skill systems are gated on that
+    /// feature. Without it, `EditorMode::Skill` is simply unused.
+    Skill,
 }
 
 /// Which screen side a mode's panel occupies
@@ -56,7 +64,7 @@ impl EditorMode {
     /// Returns the panel side if this mode has a window, None otherwise
     pub fn panel_side(&self) -> Option<PanelSide> {
         match self {
-            Self::ObjectInspector | Self::Material | Self::Particle | Self::AI | Self::Effect | Self::Blockout => Some(PanelSide::Right),
+            Self::ObjectInspector | Self::Material | Self::Particle | Self::AI | Self::Effect | Self::Blockout | Self::Skill => Some(PanelSide::Right),
             Self::Hierarchy | Self::Camera => Some(PanelSide::Left),
             _ => None,
         }

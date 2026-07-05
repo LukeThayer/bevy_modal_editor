@@ -3,6 +3,11 @@
 //! An effect is a list of **steps**, each with a **trigger** and one or more
 //! **actions**. Triggers fire based on time, collision, or internal events.
 //! Actions spawn entities, apply physics, emit events, etc.
+//!
+//! NOTE on `#[type_path]`: these types were extracted from
+//! `bevy_modal_editor::effects::data`. Saved scenes on disk reference the full
+//! reflected type path (e.g. `bevy_modal_editor::effects::data::EffectMarker`),
+//! so every scene-persisted type here pins its original path. Do not remove.
 
 use std::collections::{HashMap, HashSet};
 
@@ -10,7 +15,7 @@ use avian3d::prelude::RigidBody;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::scene::PrimitiveShape;
+use crate::primitive::PrimitiveShape;
 
 // ---------------------------------------------------------------------------
 // Core marker component (serialized to scene)
@@ -22,6 +27,7 @@ use crate::scene::PrimitiveShape;
 /// after scene restore, following the same pattern as other marker components.
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Reflect)]
 #[reflect(Component)]
+#[type_path = "bevy_modal_editor::effects::data"]
 pub struct EffectMarker {
     pub steps: Vec<EffectStep>,
 }
@@ -38,6 +44,7 @@ impl Default for EffectMarker {
 
 /// A single step in an effect sequence.
 #[derive(Serialize, Deserialize, Clone, Debug, Reflect)]
+#[type_path = "bevy_modal_editor::effects::data"]
 pub struct EffectStep {
     /// Human-readable label for this step.
     pub name: String,
@@ -53,6 +60,7 @@ pub struct EffectStep {
 
 /// Determines when an effect step fires.
 #[derive(Serialize, Deserialize, Clone, Debug, Reflect)]
+#[type_path = "bevy_modal_editor::effects::data"]
 pub enum EffectTrigger {
     /// Fire at a specific time (seconds from effect start).
     AtTime(f32),
@@ -139,6 +147,7 @@ impl EffectTrigger {
 
 /// An action that executes when a step's trigger fires.
 #[derive(Serialize, Deserialize, Clone, Debug, Reflect)]
+#[type_path = "bevy_modal_editor::effects::data"]
 pub enum EffectAction {
     /// Spawn a primitive entity as a child of the effect.
     SpawnPrimitive {
@@ -335,6 +344,7 @@ impl EffectAction {
 /// Serializable rigid body kind (mirrors avian3d::RigidBody without the
 /// non-serializable internals).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Reflect)]
+#[type_path = "bevy_modal_editor::effects::data"]
 pub enum RigidBodyKind {
     #[default]
     Dynamic,
@@ -364,6 +374,7 @@ impl RigidBodyKind {
 
 /// Where to spawn an entity relative to the effect.
 #[derive(Serialize, Deserialize, Clone, Debug, Reflect)]
+#[type_path = "bevy_modal_editor::effects::data"]
 pub enum SpawnLocation {
     /// Relative to the effect entity.
     Offset(Vec3),
@@ -383,6 +394,7 @@ impl Default for SpawnLocation {
 
 /// Which property a tween animates.
 #[derive(Serialize, Deserialize, Clone, Debug, Reflect)]
+#[type_path = "bevy_modal_editor::effects::data"]
 pub enum TweenProperty {
     Scale,
     Opacity,
@@ -430,6 +442,7 @@ impl TweenProperty {
 
 /// Easing function for tween animations.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Reflect)]
+#[type_path = "bevy_modal_editor::effects::data"]
 pub enum EasingType {
     #[default]
     Linear,
@@ -504,6 +517,9 @@ pub struct EffectPlayback {
     pub active_tweens: Vec<ActiveTween>,
     /// Fire count per rule name (for repeating triggers).
     pub repeat_counts: HashMap<String, u32>,
+    /// How many `SpawnEffect` hops deep this effect instance is (0 for
+    /// hand-placed effects). Used by the runtime's recursion depth guard.
+    pub spawn_depth: u8,
 }
 
 impl Default for EffectPlayback {
@@ -520,6 +536,7 @@ impl Default for EffectPlayback {
             last_fire_time: 0.0,
             active_tweens: Vec::new(),
             repeat_counts: HashMap::new(),
+            spawn_depth: 0,
         }
     }
 }
