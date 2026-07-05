@@ -934,7 +934,7 @@ dependencies = [
 [[package]]
 name = "bevy_egui"
 version = "0.39.0"
-source = "git+https://github.com/vladbat00/bevy_egui?branch=main#81904dac9a09d49563e39962bf3039afc47016dc"
+source = "git+https://github.com/vladbat00/bevy_egui?rev=81904dac9a09d49563e39962bf3039afc47016dc#81904dac9a09d49563e39962bf3039afc47016dc"
 dependencies = [
  "arboard",
  "bevy_app",
