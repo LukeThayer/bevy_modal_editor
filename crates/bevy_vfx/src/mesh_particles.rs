@@ -736,7 +736,13 @@ pub fn cpu_mesh_particle_cleanup(
 ) {
     // Handle removed VfxSystem entities
     for entity in removed.read() {
-        commands.entity(entity).remove::<MeshParticleStates>();
+        // The VfxSystem is often removed BY the entity's own despawn (a consumer despawns its cue
+        // effect when the effect's lifetime ends) — in which case the entity is already gone and
+        // its components with it. Guard the remove so a despawned entity is a clean no-op instead
+        // of a "remove on a despawned entity" warning (matches the `try_despawn` used below).
+        if let Ok(mut ec) = commands.get_entity(entity) {
+            ec.remove::<MeshParticleStates>();
+        }
     }
 
     // Handle emitters that are no longer mesh mode
@@ -759,7 +765,11 @@ pub fn cpu_mesh_particle_cleanup(
         });
 
         if states.entries.is_empty() {
-            commands.entity(entity).remove::<MeshParticleStates>();
+            // Same guard: a same-frame despawn elsewhere could retire this entity before the
+            // deferred command applies.
+            if let Ok(mut ec) = commands.get_entity(entity) {
+                ec.remove::<MeshParticleStates>();
+            }
         }
     }
 }
