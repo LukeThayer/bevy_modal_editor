@@ -746,3 +746,49 @@ fn cue_name_in_neither_library_warns_and_spawns_nothing_no_panic() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Regression: an authored-but-UNBOUND vfx_cues slot must still fire its cue. obelisk's cue
+// systems gate firing on `CastTimeline::vfx_cues[slot]`; a slot with no `cues` binding is a
+// legitimate authored shape — obelisk-arena's firebolt authors `on_end_bolt` in `vfx_cues` with
+// NO binding, purely as the trail-teardown trigger (the client despawns the Follow cosmetic when
+// the end cue arrives). `sync_sim_registries` used to REPLACE the authored `vfx_cues` with the
+// identity map over `cues` keys, silently dropping such slots — the preview's bolt then sailed
+// through the dummy and the floor ("the firebolt does not collide") because its teardown cue
+// never fired even though the sim resolved the hit.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unbound_vfx_cue_slots_still_fire() {
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    let (rules, mut timeline) = SkillArchetype::Projectile.build("bolt");
+    // The firebolt pattern: a teardown slot present in vfx_cues with NO cues binding.
+    timeline
+        .vfx_cues
+        .insert("on_end_bolt".to_string(), "on_end_bolt".to_string());
+    insert_skill(&mut app, "bolt", rules, timeline);
+    open_skill(&mut app, "bolt");
+    app.update();
+    app.update();
+
+    play(&mut app, 90);
+
+    let rec = app.world().resource::<EventRecorder>();
+    assert!(
+        !rec.hitbox_ended.is_empty(),
+        "the projectile must end (HitEntity on the dummy)"
+    );
+    assert!(
+        rec.cues
+            .iter()
+            .any(|c| c.kind == obelisk_bevy::events::CueKind::OnEnd),
+        "an authored-but-unbound on_end vfx_cues slot must still fire its cue (the cosmetic \
+         teardown trigger) — sync_sim_registries must PRESERVE authored vfx_cues entries, not \
+         clobber them with the identity-over-`cues`-keys map. fired: {:?}",
+        rec.cues
+            .iter()
+            .map(|c| (c.cue_id.clone(), format!("{:?}", c.kind)))
+            .collect::<Vec<_>>()
+    );
+}

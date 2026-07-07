@@ -386,11 +386,27 @@ fn add_obelisk_sim(app: &mut App) {
 /// whether a slot fires at all by looking up `CastTimeline::vfx_cues[slot] -> cue_id`; the Skill
 /// panel's Presentation region (Task 9) authors bindings directly into `CastTimeline::cues`,
 /// KEYED BY THE SAME SLOT NAME (`"on_cast"`, `"on_window_bolt"`, ... — see `cue_slots::cue_slots`
-/// and every `CueBinding` insert in `templates.rs`). So the slot → cue_id map is simply the
-/// identity map over `cues`'s own keys: v2's `cues` map IS ALREADY keyed by slot name (unlike
-/// v1's named-lane indirection, which needed a real translation step).
+/// and every `CueBinding` insert in `templates.rs`). So every `cues` key contributes an identity
+/// slot → cue_id entry (v2's `cues` map IS ALREADY keyed by slot name, unlike v1's named-lane
+/// indirection).
+///
+/// The result is the UNION of those identity entries with the timeline's own AUTHORED `vfx_cues`
+/// — an authored slot may legitimately have NO `cues` binding (obelisk-arena's firebolt authors
+/// `on_end_bolt` purely as the trail-teardown TRIGGER: the cue must fire so the client can
+/// despawn the Follow cosmetic, but binds no visual of its own). Replacing the authored map
+/// outright silently killed such slots in the preview — the bolt's teardown cue never fired and
+/// the cosmetic sailed through the dummy/floor while the sim had long since resolved the hit
+/// (see `tests/skill_preview.rs::unbound_vfx_cue_slots_still_fire`). Identity entries win on a
+/// shared slot key (a panel-authored binding is the fresher intent for that slot).
 pub fn derive_vfx_cues(tl: &CastTimeline) -> std::collections::HashMap<String, String> {
-    tl.cues.keys().map(|k| (k.clone(), k.clone())).collect()
+    let mut slots: std::collections::HashMap<String, String> =
+        tl.cues.keys().map(|k| (k.clone(), k.clone())).collect();
+    for (slot, cue_id) in &tl.vfx_cues {
+        slots
+            .entry(slot.clone())
+            .or_insert_with(|| cue_id.clone());
+    }
+    slots
 }
 
 /// Keep obelisk-bevy's OWN sim resources (`SkillRegistry`, `CastTimelineHandles` /
