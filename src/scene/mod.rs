@@ -34,10 +34,10 @@ use bevy_spline_3d::prelude::{ResolvedSplineFollower, SplineFollower};
 use bevy_spline_3d::prelude::{Spline, SplineType};
 use serde::de::DeserializeSeed;
 
-/// Marker component for entities that are part of the editable scene
-#[derive(Component, Default, Reflect)]
-#[reflect(Component)]
-pub struct SceneEntity;
+/// Marker component for entities that are part of the editable scene.
+/// MOVED to `bevy_editor_game::scene_types` (type_path pinned to this module) so games loading
+/// `.scn.ron` scenes can register it without the editor crate; re-exported for existing use sites.
+pub use bevy_editor_game::scene_types::SceneEntity;
 
 /// Marker component for entities that are procedurally generated from scene objects
 /// (e.g. road meshes, intersection meshes, distributed instances) but not tracked as

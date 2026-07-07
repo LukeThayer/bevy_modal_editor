@@ -17,8 +17,12 @@ use std::collections::HashMap;
 use bevy::math::Affine2;
 use bevy::prelude::*;
 use bevy::reflect::GetTypeRegistration;
+#[cfg(feature = "egui")]
 use bevy_egui::egui;
 use serde::{Deserialize, Serialize};
+
+pub mod scene_types;
+pub use scene_types::*;
 
 // ---------------------------------------------------------------------------
 // GLTF asset library registration
@@ -277,6 +281,7 @@ impl RegisterSceneComponentExt for App {
 /// Called with exclusive world access, the entity, and the egui UI.
 /// Returns `true` if any property was changed.
 /// Should early-return `false` if the entity doesn't have the relevant component.
+#[cfg(feature = "egui")]
 pub type InspectorWidgetFn = fn(&mut World, Entity, &mut egui::Ui) -> bool;
 
 /// Gizmo draw function for a custom entity type.
@@ -311,7 +316,9 @@ pub struct CustomEntityType {
     /// The function should add: marker component(s), `Transform`, `Visibility`,
     /// and any physics components (`Collider`, etc.).
     pub spawn: fn(&mut Commands, Vec3, Quat) -> Entity,
-    /// Optional custom inspector widget for this entity type.
+    /// Optional custom inspector widget for this entity type. (egui-feature only — headless
+    /// consumers building with `default-features = false` construct the type without it.)
+    #[cfg(feature = "egui")]
     pub draw_inspector: Option<InspectorWidgetFn>,
     /// Optional gizmo drawing function for this entity type.
     pub draw_gizmo: Option<GizmoDrawFn>,

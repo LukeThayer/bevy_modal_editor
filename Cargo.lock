@@ -915,6 +915,7 @@ name = "bevy_editor_game"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bevy_effect",
  "bevy_egui",
  "ron 0.8.1",
  "serde",

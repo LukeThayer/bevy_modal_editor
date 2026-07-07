@@ -11,64 +11,19 @@ use bevy_grid_shader::GridMaterial;
 use super::blockout::{spawn_arch, spawn_lshape, spawn_ramp, spawn_stairs, GridMat};
 use super::SceneEntity;
 use crate::commands::TakeSnapshotCommand;
-use crate::constants::{light_colors, physics};
+use crate::constants::physics;
 use crate::materials::grid::GridMaterialProps;
 use crate::effects::{EffectLibrary, EffectMarker};
 use bevy_vfx::{VfxLibrary, VfxSystem};
 use crate::selection::Selected;
 
-/// Marker component for group entities (containers for nesting)
-#[derive(Component, Serialize, Deserialize, Clone, Default, Reflect)]
-#[reflect(Component)]
-pub struct GroupMarker;
+// GroupMarker / Locked / SceneLightMarker / DirectionalLightMarker / PrimitiveMarker MOVED to
+// `bevy_editor_game::scene_types` (type_paths pinned to this module) so games loading `.scn.ron`
+// scenes can register them without the editor crate; re-exported for existing use sites.
+pub use bevy_editor_game::scene_types::{
+    DirectionalLightMarker, GroupMarker, Locked, PrimitiveMarker, SceneLightMarker,
+};
 
-/// Marker component for locked entities (prevents editing)
-#[derive(Component, Serialize, Deserialize, Clone, Default, Reflect)]
-#[reflect(Component)]
-pub struct Locked;
-
-/// Marker component for point lights
-#[derive(Component, Serialize, Deserialize, Clone, Reflect)]
-#[reflect(Component, Default)]
-pub struct SceneLightMarker {
-    pub color: Color,
-    pub intensity: f32,
-    pub range: f32,
-    pub shadows_enabled: bool,
-    #[serde(default)]
-    pub radius: f32,
-}
-
-impl Default for SceneLightMarker {
-    fn default() -> Self {
-        Self {
-            color: light_colors::POINT_DEFAULT,
-            intensity: light_colors::POINT_DEFAULT_INTENSITY,
-            range: light_colors::POINT_DEFAULT_RANGE,
-            shadows_enabled: true,
-            radius: 0.0,
-        }
-    }
-}
-
-/// Marker component for directional lights (sun)
-#[derive(Component, Serialize, Deserialize, Clone, Reflect)]
-#[reflect(Component)]
-pub struct DirectionalLightMarker {
-    pub color: Color,
-    pub illuminance: f32,
-    pub shadows_enabled: bool,
-}
-
-impl Default for DirectionalLightMarker {
-    fn default() -> Self {
-        Self {
-            color: light_colors::DIRECTIONAL_DEFAULT,
-            illuminance: light_colors::DIRECTIONAL_DEFAULT_ILLUMINANCE,
-            shadows_enabled: true,
-        }
-    }
-}
 
 /// Marker component for spline entities
 #[derive(Component, Serialize, Deserialize, Clone, Default, Reflect)]
@@ -267,13 +222,6 @@ pub struct UnparentSelectedEvent;
 /// Event to group multiple selected entities into a new group
 #[derive(Message)]
 pub struct GroupSelectedEvent;
-
-/// Component to track what primitive shape an entity is
-#[derive(Component, Serialize, Deserialize, Clone, Reflect)]
-#[reflect(Component)]
-pub struct PrimitiveMarker {
-    pub shape: PrimitiveShape,
-}
 
 pub struct PrimitivesPlugin;
 
