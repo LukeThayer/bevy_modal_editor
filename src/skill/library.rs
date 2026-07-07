@@ -292,6 +292,12 @@ pub fn scan_and_merge_root(
     }
     load_effects_from_dir(effect_library, &root.join("assets").join("effects"));
     crate::vfx::load_vfx_presets_from_dir(vfx_library, &root.join("assets").join("vfx"));
+    // ALSO scan the root's `assets/skills/` for `*.vfx.ron` — the obelisk-arena game client
+    // loads vfx presets from BOTH dirs (`for dir in ["assets/vfx", "assets/skills"]`, its
+    // `init_vfx_library`), and skill-adjacent presets are authored next to their `.cast.ron`
+    // (e.g. `blizzard_frost.vfx.ron`). Without this, a cue bound to such a preset rendered
+    // in-game but NOTHING in the Skill preview ("blizzard shows nothing when played").
+    crate::vfx::load_vfx_presets_from_dir(vfx_library, &root.join("assets").join("skills"));
 }
 
 /// `Startup` system: ensures the starter Effect presets exist (fresh-install safety —
@@ -462,11 +468,12 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    /// A scratch directory under the OS temp dir, cleaned up on drop.
-    struct TempRoot(PathBuf);
+    /// A scratch directory under the OS temp dir, cleaned up on drop. `pub(super)`: also used by
+    /// the sibling `skills_dir_vfx_tests` module.
+    pub(super) struct TempRoot(PathBuf);
 
     impl TempRoot {
-        fn new(tag: &str) -> Self {
+        pub(super) fn new(tag: &str) -> Self {
             static COUNTER: AtomicU32 = AtomicU32::new(0);
             let n = COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
@@ -477,7 +484,7 @@ mod tests {
             Self(path)
         }
 
-        fn path(&self) -> &Path {
+        pub(super) fn path(&self) -> &Path {
             &self.0
         }
     }
@@ -695,6 +702,41 @@ mod tests {
         assert!(
             skills.contains_key("haunted"),
             "a dangling trigger_skill reference must warn, not silently drop the skill"
+        );
+    }
+}
+
+#[cfg(test)]
+mod skills_dir_vfx_tests {
+    use super::*;
+    use crate::effects::EffectLibrary;
+    use bevy_vfx::VfxLibrary;
+
+    /// REGRESSION: skill-adjacent vfx presets (`<root>/assets/skills/*.vfx.ron`, authored next
+    /// to their `.cast.ron` — e.g. obelisk-arena's `blizzard_frost`) must load into `VfxLibrary`
+    /// on a content-root scan, mirroring the game client's loader (it scans BOTH `assets/vfx`
+    /// and `assets/skills`). Without this, cues bound to such presets rendered in-game but
+    /// showed NOTHING in the Skill preview ("blizzard shows nothing when played").
+    #[test]
+    fn content_scan_loads_vfx_presets_from_the_skills_dir() {
+        let root = tests::TempRoot::new("skills_vfx");
+        let dir = root.path().join("assets").join("skills");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("frosty.vfx.ron"),
+            "(emitters: [], params: [], duration: 1.0, looping: false)",
+        )
+        .unwrap();
+
+        let mut skills = SkillLibrary::default();
+        let mut effects = EffectLibrary::default();
+        let mut vfx = VfxLibrary::default();
+        scan_and_merge_root(root.path(), &mut skills, &mut effects, &mut vfx);
+
+        assert!(
+            vfx.effects.contains_key("frosty"),
+            "assets/skills/*.vfx.ron must load into VfxLibrary (game-loader parity); got: {:?}",
+            vfx.effects.keys().collect::<Vec<_>>()
         );
     }
 }
