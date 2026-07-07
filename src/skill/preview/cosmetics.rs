@@ -223,10 +223,16 @@ pub fn on_preview_cue(
         }
     }
 
-    let Some(skill_id) = previewing.0.as_ref() else {
+    // Only render during a preview session…
+    if previewing.0.is_none() {
         return;
-    };
-    let Some(entry) = library.skills.get(skill_id) else {
+    }
+    // …but resolve the binding from the cue's OWN skill (`CueEvent.skill_id` — obelisk carries
+    // it for exactly this multi-skill resolution, and the game client resolves the same way): a
+    // previewed skill's TRIGGERED sub-cast (firebolt → firebolt_explosion) fires cues under the
+    // SUB-skill's id, which the open skill's timeline knows nothing about. Resolving via the
+    // open skill silently dropped every triggered explosion's visuals in the preview.
+    let Some(entry) = library.skills.get(&ev.skill_id) else {
         return;
     };
     let tl = &entry.timeline;

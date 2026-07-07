@@ -792,3 +792,60 @@ fn unbound_vfx_cue_slots_still_fire() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regression (handle stability): the egui Skill panel takes `ResMut<SkillLibrary>` while drawing,
+// so the library reads as changed EVERY frame a skill is open — not just on real edits.
+// `sync_sim_registries` used to re-`add` every timeline unconditionally on any change, minting a
+// NEW asset + handle per frame: per-frame asset/GC churn, asset-event spam, and a standing race
+// for anything holding a timeline handle across ticks. Handles must stay STABLE under per-frame
+// library dirtying (content updates go through the existing handle in place), and an in-flight
+// cast must keep working throughout.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn per_frame_library_writes_keep_timeline_handles_stable() {
+    use obelisk_bevy::assets::CastTimelineHandles;
+
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    let (rules, timeline) = SkillArchetype::Projectile.build("bolt");
+    insert_skill(&mut app, "bolt", rules, timeline);
+    open_skill(&mut app, "bolt");
+    app.update();
+    app.update();
+
+    let handle_before = app
+        .world()
+        .resource::<CastTimelineHandles>()
+        .0
+        .get("bolt")
+        .map(|h| h.id())
+        .expect("timeline registered after the settle frames");
+
+    app.world_mut().write_message(GameStartedEvent);
+    for _ in 0..90 {
+        // The panel's per-frame `ResMut<SkillLibrary>` deref (no real edit).
+        app.world_mut().resource_mut::<SkillLibrary>().set_changed();
+        app.update();
+    }
+
+    let handle_after = app
+        .world()
+        .resource::<CastTimelineHandles>()
+        .0
+        .get("bolt")
+        .map(|h| h.id())
+        .expect("timeline still registered");
+    assert_eq!(
+        handle_before, handle_after,
+        "per-frame library dirtying must NOT mint a new timeline asset/handle each frame — \
+         unchanged content syncs in place through the existing handle"
+    );
+
+    let rec = app.world().resource::<EventRecorder>();
+    assert!(
+        !rec.hit_window_opened.is_empty() && !rec.damage_resolved.is_empty(),
+        "the in-flight cast still opens its window and lands damage under per-frame writes"
+    );
+}

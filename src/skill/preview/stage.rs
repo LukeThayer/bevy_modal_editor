@@ -421,18 +421,49 @@ fn sync_sim_registries(
     mut registry: ResMut<SkillRegistry>,
     mut handles: ResMut<CastTimelineHandles>,
     mut timelines: ResMut<Assets<CastTimeline>>,
+    mut synced: Local<std::collections::HashMap<String, u64>>,
 ) {
     if !library.is_changed() {
         return;
     }
+    // HANDLE STABILITY. The egui Skill panel takes `ResMut<SkillLibrary>` while drawing, so
+    // `library.is_changed()` is true EVERY frame a skill is open — not just on real edits. The
+    // old body re-`add`ed every timeline unconditionally on any change, minting a NEW asset +
+    // handle PER FRAME: per-frame asset/GC churn, `AssetEvent` spam, and a standing race for
+    // anything holding a timeline handle across ticks (obelisk re-resolves per tick today, but
+    // nothing guarantees that forever). So: skip skills whose synced content is unchanged
+    // (hash-gated — per-frame panel noise becomes a no-op), write CHANGED content in-place
+    // through the EXISTING handle (in-flight casts keep resolving and pick up live edits), and
+    // add assets only for NEW skills. See
+    // `tests/skill_preview.rs::per_frame_library_writes_keep_timeline_handles_stable`.
     registry.0.clear();
     for (id, entry) in &library.skills {
         registry.0.insert(id.clone(), entry.rules.clone());
         let mut tl = entry.timeline.clone();
         tl.vfx_cues = derive_vfx_cues(&tl);
-        let handle = timelines.add(tl);
-        handles.0.insert(id.clone(), handle);
+        let hash = ron::ser::to_string(&tl)
+            .map(|s| crate::skill::library::hash_bytes(s.as_bytes()))
+            .unwrap_or(0);
+        let existing = handles.0.get(id).cloned();
+        if synced.get(id) == Some(&hash) && existing.is_some() {
+            continue; // unchanged content, stable handle — nothing to do
+        }
+        match existing.and_then(|h| timelines.get_mut(&h).map(|_| h)) {
+            Some(h) => {
+                if let Some(asset) = timelines.get_mut(&h) {
+                    *asset = tl;
+                }
+            }
+            None => {
+                let handle = timelines.add(tl);
+                handles.0.insert(id.clone(), handle);
+            }
+        }
+        synced.insert(id.clone(), hash);
     }
+    // Skills removed from the library drop their handle (and the asset with it).
+    handles.0.retain(|id, _| library.skills.contains_key(id));
+    synced.retain(|id, _| library.skills.contains_key(id));
 }
 
 // ---------------------------------------------------------------------------
