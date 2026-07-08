@@ -103,15 +103,50 @@ impl PaletteItem for AssetFileItem {
 
 // ── Scanning ─────────────────────────────────────────────────────────
 
-/// Recursively scan `assets/` for files matching the given extensions.
+/// The directory the ASSET SERVER loads from — set once by `EditorPlugin` from the app's
+/// `AssetPlugin::file_path`. A host game that points `AssetPlugin` somewhere other than the
+/// CWD-relative `assets/` (e.g. obelisk-arena's editor shell, which runs from
+/// `crates/arena_editor/` but loads assets from the workspace root) would otherwise get EMPTY
+/// asset-server-backed pickers (textures/gltf/splats): the files the server can load aren't
+/// under the CWD. Fs-backed browse operations (scene save/load/insert, which really do
+/// read/write CWD-relative `assets/`) deliberately keep using [`scan_assets`].
+static ASSET_SCAN_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Record the asset server's root for [`scan_asset_server_root`]. First call wins (one asset
+/// root per process — every `App` in a test binary shares it, which is fine: they all configure
+/// the same root). Relative paths mean CWD-relative, matching how Bevy's `FileAssetReader`
+/// resolves a relative `file_path` under `cargo run`.
+pub fn set_asset_scan_root(root: std::path::PathBuf) {
+    let _ = ASSET_SCAN_ROOT.set(root);
+}
+
+fn asset_scan_root() -> &'static Path {
+    ASSET_SCAN_ROOT
+        .get()
+        .map(|p| p.as_path())
+        .unwrap_or_else(|| Path::new("assets"))
+}
+
+/// Recursively scan the CWD-relative `assets/` for files matching the given extensions — for
+/// FS-backed browse operations (scene save/load/insert read and write `assets/…` relative to the
+/// CWD). Asset-server-backed pickers use [`scan_asset_server_root`] instead.
 pub(crate) fn scan_assets(extensions: &[&str]) -> Vec<AssetFileItem> {
-    let assets_dir = Path::new("assets");
-    if !assets_dir.is_dir() {
+    scan_root(Path::new("assets"), extensions)
+}
+
+/// Recursively scan the ASSET SERVER's root (see [`set_asset_scan_root`]) — for pickers whose
+/// selection is loaded through the asset server (textures, gltf, splats): the relative paths
+/// this returns are exactly what `AssetServer::load` resolves.
+pub(crate) fn scan_asset_server_root(extensions: &[&str]) -> Vec<AssetFileItem> {
+    scan_root(asset_scan_root(), extensions)
+}
+
+fn scan_root(root: &Path, extensions: &[&str]) -> Vec<AssetFileItem> {
+    if !root.is_dir() {
         return Vec::new();
     }
-
     let mut items = Vec::new();
-    scan_dir_recursive(assets_dir, assets_dir, extensions, &mut items);
+    scan_dir_recursive(root, root, extensions, &mut items);
     items.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     items
 }
@@ -459,4 +494,29 @@ pub(super) fn draw_asset_browser(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `scan_root` lists matching files RELATIVE to whatever root it is given — the load-bearing
+    /// property behind `scan_asset_server_root`: a host game that points `AssetPlugin::file_path`
+    /// away from the CWD (obelisk-arena's editor shell) must still get its textures listed, as
+    /// asset-server-relative paths.
+    #[test]
+    fn scan_root_lists_relative_to_the_given_root() {
+        let dir = std::env::temp_dir().join(format!("asset_scan_test_{}", std::process::id()));
+        let particles = dir.join("textures/particles");
+        std::fs::create_dir_all(&particles).unwrap();
+        std::fs::write(particles.join("spark.png"), b"x").unwrap();
+        std::fs::write(particles.join("readme.txt"), b"x").unwrap();
+
+        let items = scan_root(&dir, &["png"]);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].relative_path, "textures/particles/spark.png");
+
+        // A root that doesn't exist lists nothing (never panics).
+        assert!(scan_root(Path::new("/nonexistent-root-xyz"), &["png"]).is_empty());
+    }
 }

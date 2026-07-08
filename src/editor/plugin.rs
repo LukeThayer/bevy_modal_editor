@@ -181,6 +181,18 @@ pub fn recommended_image_plugin() -> ImagePlugin {
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
+        // Tell the asset browser where the ASSET SERVER actually loads from (a host game may
+        // point `AssetPlugin::file_path` away from the CWD-relative `assets/` — without this,
+        // the texture/gltf/splat pickers scan a directory the server never reads and come up
+        // empty). `AssetPlugin` is added by `DefaultPlugins` BEFORE `EditorPlugin` in every
+        // composition; the "assets" fallback keeps standalone/minimal test apps working.
+        let asset_root = app
+            .get_added_plugins::<bevy::asset::AssetPlugin>()
+            .first()
+            .map(|p| std::path::PathBuf::from(&p.file_path))
+            .unwrap_or_else(|| std::path::PathBuf::from("assets"));
+        crate::ui::asset_browser::set_asset_scan_root(asset_root);
+
         // Third-party plugins (conditional)
         // Only add if configured AND not already present
         if self.config.add_egui && !app.is_plugin_added::<EguiPlugin>() {

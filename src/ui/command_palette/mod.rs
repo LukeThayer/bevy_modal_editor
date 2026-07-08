@@ -5,7 +5,7 @@
 //! through a single `CommandPaletteState` resource and dispatched by
 //! `PaletteMode`.
 
-mod asset_browser;
+pub mod asset_browser;
 pub(super) mod commands;
 pub(super) mod components;
 mod effect_preset;
@@ -223,7 +223,23 @@ impl CommandPaletteState {
     // ── AssetBrowser open helpers ──
 
     fn open_asset_browser(&mut self, operation: asset_browser::BrowseOperation, extensions: &[&str]) {
-        self.asset_items = asset_browser::scan_assets(extensions);
+        // Which tree the list comes from must match how the SELECTION is consumed: texture/
+        // gltf/splat picks are loaded through the ASSET SERVER (whose root a host game can point
+        // away from the CWD — obelisk-arena's editor shell does), while scene save/load/insert
+        // read + write the CWD-relative `assets/` directly.
+        self.asset_items = match &operation {
+            asset_browser::BrowseOperation::PickTexture { .. }
+            | asset_browser::BrowseOperation::PickGltf { .. }
+            | asset_browser::BrowseOperation::InsertGltf
+            | asset_browser::BrowseOperation::InsertSplat => {
+                asset_browser::scan_asset_server_root(extensions)
+            }
+            asset_browser::BrowseOperation::LoadScene
+            | asset_browser::BrowseOperation::SaveScene
+            | asset_browser::BrowseOperation::InsertScene => {
+                asset_browser::scan_assets(extensions)
+            }
+        };
         self.open_mode(PaletteMode::AssetBrowser);
         self.browse_operation = Some(operation);
         self.preview_path = None;
