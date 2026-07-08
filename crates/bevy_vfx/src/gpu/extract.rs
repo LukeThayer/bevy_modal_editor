@@ -6,7 +6,9 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::render::Extract;
 
-use crate::data::{EmitterDef, RenderModule, VfxRestart, VfxStartTime, VfxSystem};
+use crate::data::{
+    EmitterDef, RenderModule, VfxEmissionStopped, VfxRestart, VfxStartTime, VfxSystem,
+};
 
 /// Extracted data for a single emitter, stored in a resource (not per-entity).
 pub struct ExtractedEmitterInfo {
@@ -24,6 +26,9 @@ pub struct ExtractedEmitterInfo {
     pub start_time: f32,
     /// If true, this system should be restarted (evict GPU caches).
     pub restart: bool,
+    /// If true (root carries `VfxEmissionStopped`), force this frame's spawn count to 0 while
+    /// keeping the buffers + sim alive so live particles drain out.
+    pub emission_stopped: bool,
 }
 
 /// Resource holding all extracted emitter data for the current frame.
@@ -79,13 +84,14 @@ pub fn extract_vfx_systems(
             &GlobalTransform,
             Option<&VfxStartTime>,
             Has<VfxRestart>,
+            Has<VfxEmissionStopped>,
         )>,
     >,
     texture_cache: Extract<Res<VfxTextureCache>>,
 ) {
     extracted.emitters.clear();
 
-    for (entity, system, transform, start_time, restart) in &query {
+    for (entity, system, transform, start_time, restart, emission_stopped) in &query {
         let st = start_time.map(|s| s.0).unwrap_or(0.0);
         for (idx, emitter) in system.emitters.iter().enumerate() {
             if !emitter.enabled {
@@ -109,6 +115,12 @@ pub fn extract_vfx_systems(
                 texture,
                 start_time: st,
                 restart,
+                // NOTE: an emission-stopped emitter stays EXTRACTED (buffers alive, compute sim
+                // still stepping so live particles age out + render) — prepare just forces its
+                // spawn count to 0. Un-extracting instead would evict the GPU buffers and vanish
+                // every live particle the same frame (the exact cull VfxEmissionStopped exists
+                // to avoid).
+                emission_stopped,
             });
         }
     }

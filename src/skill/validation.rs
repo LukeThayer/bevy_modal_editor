@@ -556,7 +556,7 @@ mod tests {
         let mut cues = HashMap::new();
         cues.insert(
             "on_cast".to_string(),
-            CueBinding { effect: Some("Nonexistent".to_string()), attach: CueAttach::World, anim: None, params: vec![] },
+            CueBinding { effect: Some("Nonexistent".to_string()), attach: CueAttach::World, anim: None, params: vec![], duration: None },
         );
         entry.timeline.cues = cues;
 
@@ -574,7 +574,7 @@ mod tests {
         let mut cues = HashMap::new();
         cues.insert(
             "on_cast".to_string(),
-            CueBinding { effect: Some("Muzzle".to_string()), attach: CueAttach::World, anim: None, params: vec![] },
+            CueBinding { effect: Some("Muzzle".to_string()), attach: CueAttach::World, anim: None, params: vec![], duration: None },
         );
         entry.timeline.cues = cues;
 
@@ -592,7 +592,7 @@ mod tests {
         let mut cues = HashMap::new();
         cues.insert(
             "on_cast".to_string(),
-            CueBinding { effect: Some("Spark".to_string()), attach: CueAttach::World, anim: None, params: vec![] },
+            CueBinding { effect: Some("Spark".to_string()), attach: CueAttach::World, anim: None, params: vec![], duration: None },
         );
         entry.timeline.cues = cues;
 
@@ -611,7 +611,7 @@ mod tests {
         let mut cues = HashMap::new();
         cues.insert(
             "on_cast".to_string(),
-            CueBinding { effect: None, attach: CueAttach::World, anim: Some("missing::clip".to_string()), params: vec![] },
+            CueBinding { effect: None, attach: CueAttach::World, anim: Some("missing::clip".to_string()), params: vec![], duration: None },
         );
         entry.timeline.cues = cues;
 
@@ -630,7 +630,7 @@ mod tests {
         let mut cues = HashMap::new();
         cues.insert(
             "on_cast".to_string(),
-            CueBinding { effect: None, attach: CueAttach::World, anim: Some("missing::clip".to_string()), params: vec![] },
+            CueBinding { effect: None, attach: CueAttach::World, anim: Some("missing::clip".to_string()), params: vec![], duration: None },
         );
         entry.timeline.cues = cues;
 
@@ -805,6 +805,7 @@ mod tests {
                 attach: CueAttach::World,
                 anim: None,
                 params: vec![CueParam { param: "scale".to_string(), source: ParamSource::Charge }],
+                duration: None,
             },
         );
         entry.timeline.cues = cues;

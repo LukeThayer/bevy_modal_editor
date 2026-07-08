@@ -684,6 +684,12 @@ fn draw_vfx_panel(world: &mut World) {
                             .range(0.0..=600.0)
                             .max_decimals(1)
                             .suffix(" s"),
+                    )
+                    .on_hover_text(
+                        "The preset's default PLAY length when a skill cue binds it without \
+                         its own Duration: emit this long, then stop and let live particles \
+                         finish their lifetimes. 0 = no preset default (the host default \
+                         applies).",
                     );
                     ui.end_row();
 

@@ -682,3 +682,36 @@ pub fn cleanup_effect(commands: &mut Commands, playback: &mut EffectPlayback) {
     playback.repeat_counts.clear();
     playback.state = PlaybackState::Stopped;
 }
+
+/// GRACEFULLY stop an effect: halt trigger firing (`Playing` → `Stopped`) and stop every spawned
+/// vfx child EMITTING — without despawning anything, so live particles finish their authored
+/// lifetimes and fade out as designed. The graceful sibling of [`cleanup_effect`]: `stop_effect`
+/// first, wait out the drain (see [`max_spawned_particle_lifetime`]), then [`cleanup_effect`] to
+/// despawn the (by then empty) children. `playback.spawned` is deliberately NOT drained here —
+/// the final cleanup still owns the despawn.
+pub fn stop_effect(commands: &mut Commands, playback: &mut EffectPlayback) {
+    playback.state = PlaybackState::Stopped;
+    playback.active_tweens.clear();
+    for (_tag, entity) in playback.spawned.iter() {
+        // Harmless on non-vfx children (a stray marker on a light/mesh is inert).
+        if let Ok(mut ec) = commands.get_entity(*entity) {
+            ec.insert(bevy_vfx::VfxEmissionStopped);
+        }
+    }
+}
+
+/// The longest any live particle of this effect's spawned vfx children can still take to age out
+/// (the max of their [`bevy_vfx::VfxSystem::max_particle_lifetime`]s) — how long a caller must
+/// wait after [`stop_effect`] before [`cleanup_effect`] despawns nothing visible. Children
+/// without a `VfxSystem` (lights, meshes, nested effects' roots) contribute 0.
+pub fn max_spawned_particle_lifetime(
+    playback: &EffectPlayback,
+    systems: &Query<&bevy_vfx::VfxSystem>,
+) -> f32 {
+    playback
+        .spawned
+        .values()
+        .filter_map(|e| systems.get(*e).ok())
+        .map(|s| s.max_particle_lifetime())
+        .fold(0.0, f32::max)
+}

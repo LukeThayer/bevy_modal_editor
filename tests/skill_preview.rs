@@ -420,6 +420,7 @@ fn cue_bound_to_a_vfx_preset_spawns_a_preview_cosmetic() {
             attach: obelisk_bevy::assets::CueAttach::World,
             anim: None,
             params: Vec::new(),
+            duration: None,
         },
     );
     insert_skill(&mut app, "zap", rules, timeline);
@@ -532,6 +533,7 @@ fn preview_cosmetics_are_not_game_entity_tagged() {
             attach: obelisk_bevy::assets::CueAttach::World,
             anim: None,
             params: Vec::new(),
+            duration: None,
         },
     );
     insert_skill(&mut app, "zap_reset", rules, timeline);
@@ -581,6 +583,7 @@ fn game_reset_event_expires_cosmetics_via_the_ladder_not_a_hard_despawn() {
             attach: obelisk_bevy::assets::CueAttach::World,
             anim: None,
             params: Vec::new(),
+            duration: None,
         },
     );
     insert_skill(&mut app, "zap_reset2", rules, timeline);
@@ -659,6 +662,7 @@ fn cue_name_in_both_libraries_resolves_to_the_effect_library_entry() {
             attach: obelisk_bevy::assets::CueAttach::World,
             anim: None,
             params: Vec::new(),
+            duration: None,
         },
     );
     insert_skill(&mut app, "dupname", rules, timeline);
@@ -704,6 +708,7 @@ fn cue_name_in_neither_library_warns_and_spawns_nothing_no_panic() {
             attach: obelisk_bevy::assets::CueAttach::World,
             anim: None,
             params: Vec::new(),
+            duration: None,
         },
     );
     timeline.cues.insert(
@@ -713,6 +718,7 @@ fn cue_name_in_neither_library_warns_and_spawns_nothing_no_panic() {
             attach: obelisk_bevy::assets::CueAttach::World,
             anim: None,
             params: Vec::new(),
+            duration: None,
         },
     );
     insert_skill(&mut app, "ghostcue", rules, timeline);

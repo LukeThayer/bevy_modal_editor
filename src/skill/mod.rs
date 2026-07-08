@@ -1017,6 +1017,7 @@ fn skill_probe(
                         attach: CueAttach::World,
                         anim: None,
                         params: vec![CueParam { param: "scale".to_string(), source: ParamSource::Charge }],
+                        duration: None,
                     },
                 );
             }

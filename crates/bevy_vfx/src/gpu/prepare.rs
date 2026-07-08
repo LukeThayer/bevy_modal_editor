@@ -99,8 +99,13 @@ pub fn prepare_vfx_buffers(
         // Compute per-system elapsed time (relative to start_time)
         let local_elapsed = elapsed - info.start_time;
 
-        // Compute spawn count for this frame
-        let spawn_count = compute_spawn_count(&emitter_def.spawn, dt, local_elapsed);
+        // Compute spawn count for this frame. Emission-stopped systems (`VfxEmissionStopped` on
+        // the root) spawn nothing but stay fully simulated — live particles keep aging out.
+        let spawn_count = if info.emission_stopped {
+            0
+        } else {
+            compute_spawn_count(&emitter_def.spawn, dt, local_elapsed)
+        };
 
         // Fast change detection: compare EmitterDef by value to skip expensive
         // pack_emitter_params() (builds 912-byte struct) when nothing changed.

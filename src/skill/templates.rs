@@ -97,6 +97,7 @@ fn cast_and_hit_cues() -> std::collections::HashMap<String, CueBinding> {
             attach: CueAttach::World,
             anim: None,
             params: Vec::new(),
+            duration: None,
         },
     );
     cues.insert(
@@ -106,6 +107,7 @@ fn cast_and_hit_cues() -> std::collections::HashMap<String, CueBinding> {
             attach: CueAttach::World,
             anim: None,
             params: Vec::new(),
+            duration: None,
         },
     );
     cues

@@ -163,14 +163,19 @@ pub fn auto_insert_mesh_particle_state(
     }
 }
 
-/// Spawn new mesh particles based on SpawnModule settings.
+/// Spawn new mesh particles based on SpawnModule settings. Roots carrying
+/// [`crate::data::VfxEmissionStopped`] spawn nothing — their live particles keep simulating in
+/// `cpu_mesh_particle_update` and age out on their authored lifetimes (the graceful wind-down).
 pub fn cpu_mesh_particle_spawn(
     mut commands: Commands,
     time: Res<Time>,
     mut assets: ResMut<MeshParticleAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut query: Query<(Entity, &VfxSystem, &GlobalTransform, &mut MeshParticleStates)>,
+    mut query: Query<
+        (Entity, &VfxSystem, &GlobalTransform, &mut MeshParticleStates),
+        Without<crate::data::VfxEmissionStopped>,
+    >,
 ) {
     let dt = time.delta_secs();
 

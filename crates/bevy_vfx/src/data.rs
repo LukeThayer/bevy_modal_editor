@@ -39,6 +39,22 @@ impl Default for VfxSystem {
     }
 }
 
+impl VfxSystem {
+    /// Upper bound on how long any particle this system emits can live, across all ENABLED
+    /// emitters: the max of each emitter's `SetLifetime` upper bound (see
+    /// [`EmitterDef::max_particle_lifetime`]). After emission stops (see
+    /// [`VfxEmissionStopped`]), waiting this long guarantees every live particle has aged out —
+    /// `KillZone`/collisions can only shorten a particle's life, never extend it. `0.0` when no
+    /// emitter is enabled.
+    pub fn max_particle_lifetime(&self) -> f32 {
+        self.emitters
+            .iter()
+            .filter(|e| e.enabled)
+            .map(EmitterDef::max_particle_lifetime)
+            .fold(0.0, f32::max)
+    }
+}
+
 /// Per-system start time (seconds since app start). Auto-inserted when missing.
 /// Used to compute per-system elapsed time for burst offsets, Once mode, etc.
 #[derive(Component, Clone, Copy, Debug)]
@@ -48,6 +64,17 @@ pub struct VfxStartTime(pub f32);
 /// resets emitter state, and evicts GPU buffer caches. Consumed after one frame.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct VfxRestart;
+
+/// Marker: stop EMITTING new particles while the live ones keep simulating and age out on their
+/// own authored lifetimes (`SetLifetime` + the fade curves) — the graceful wind-down phase of an
+/// effect, as opposed to despawning the root (which evicts the GPU buffers and vanishes every
+/// live particle the same frame). GPU emitters stay extracted with their spawn count forced to
+/// 0; CPU mesh emitters skip their spawn step (their update/age-out systems never stopped).
+/// Remove the marker to resume emission. Pair with [`VfxSystem::max_particle_lifetime`] to know
+/// how long to keep the entity alive before despawning: after that long with emission stopped,
+/// every particle is guaranteed dead.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct VfxEmissionStopped;
 
 // ---------------------------------------------------------------------------
 // Emitter definition
@@ -99,6 +126,22 @@ impl Default for EmitterDef {
             sim_space: SimSpace::Local,
             alpha_mode: VfxAlphaMode::Blend,
         }
+    }
+}
+
+impl EmitterDef {
+    /// Upper bound on how long a particle from this emitter can live: the `SetLifetime` init
+    /// module's upper bound. Falls back to 5.0 when no `SetLifetime` is authored — the larger of
+    /// the two backend defaults (CPU mesh particles default to 5.0, GPU to 1.0), so it is a safe
+    /// upper bound for either.
+    pub fn max_particle_lifetime(&self) -> f32 {
+        self.init
+            .iter()
+            .find_map(|m| match m {
+                InitModule::SetLifetime(range) => Some(range.max_val()),
+                _ => None,
+            })
+            .unwrap_or(5.0)
     }
 }
 
@@ -873,4 +916,40 @@ pub enum VfxParamValue {
 #[derive(Resource, Default)]
 pub struct VfxLibrary {
     pub effects: std::collections::HashMap<String, VfxSystem>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `max_particle_lifetime` = the max `SetLifetime` upper bound across ENABLED emitters —
+    /// the "wait this long after emission stops, then every particle is dead" contract that
+    /// graceful teardown (`VfxEmissionStopped` + despawn-after-drain) is built on.
+    #[test]
+    fn max_particle_lifetime_takes_enabled_max_with_fallback() {
+        let mut short = EmitterDef::default();
+        short.init = vec![InitModule::SetLifetime(ScalarRange::Random(0.1, 0.6))];
+        let mut long = EmitterDef::default();
+        long.init = vec![InitModule::SetLifetime(ScalarRange::Constant(2.5))];
+        let mut disabled_longer = EmitterDef::default();
+        disabled_longer.enabled = false;
+        disabled_longer.init = vec![InitModule::SetLifetime(ScalarRange::Constant(9.0))];
+        let system = VfxSystem {
+            emitters: vec![short, long, disabled_longer],
+            ..Default::default()
+        };
+        assert_eq!(system.max_particle_lifetime(), 2.5);
+
+        // No SetLifetime authored → the 5.0 fallback (the larger backend default).
+        let mut bare = EmitterDef::default();
+        bare.init.clear();
+        assert_eq!(bare.max_particle_lifetime(), 5.0);
+
+        // Nothing enabled → 0.0 (nothing can be alive).
+        let none = VfxSystem {
+            emitters: vec![],
+            ..Default::default()
+        };
+        assert_eq!(none.max_particle_lifetime(), 0.0);
+    }
 }

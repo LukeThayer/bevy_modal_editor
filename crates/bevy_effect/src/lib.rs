@@ -33,4 +33,4 @@ pub use data::*;
 pub use gltf::{GltfLoaded, GltfSource, GltfSourcePlugin};
 pub use loader::load_effects_from_dir;
 pub use primitive::PrimitiveShape;
-pub use runtime::{cleanup_effect, EffectLibrary, EffectPlugin};
+pub use runtime::{cleanup_effect, max_spawned_particle_lifetime, stop_effect, EffectLibrary, EffectPlugin};

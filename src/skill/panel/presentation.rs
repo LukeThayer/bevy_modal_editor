@@ -54,6 +54,7 @@ use bevy_vfx::VfxLibrary;
 use crate::effects::EffectLibrary;
 use crate::skill::cue_slots::{cue_slots, CueSlot};
 use crate::skill::library::SkillEntry;
+use crate::skill::preview::cosmetics::resolve_cue_duration;
 use crate::skill::validation::ValidationReport;
 use crate::ui::theme::{colors, grid_label, GRID_SPACING};
 
@@ -206,6 +207,25 @@ fn draw_cue_row(
             }
         }
 
+        // Duration control — only meaningful once an effect is bound (it tunes how long THAT
+        // effect plays). Rendered after attach/anim so the row reads effect → where → how long.
+        if entry
+            .timeline
+            .cues
+            .get(&slot.slot_id)
+            .is_some_and(|b| b.effect.is_some())
+        {
+            let mut duration_value =
+                entry.timeline.cues.get(&slot.slot_id).and_then(|b| b.duration);
+            let bound_effect =
+                entry.timeline.cues.get(&slot.slot_id).and_then(|b| b.effect.clone());
+            if duration_picker(ui, &slot.slot_id, &mut duration_value, bound_effect.as_deref(), vfx)
+            {
+                changed = true;
+                set_or_clear_field(entry, &slot.slot_id, |b| b.duration = duration_value);
+            }
+        }
+
         if entry.timeline.cues.contains_key(&slot.slot_id) {
             changed |= draw_charge_params(ui, &slot.slot_id, entry, vfx);
         }
@@ -243,6 +263,7 @@ fn prune_if_empty(entry: &mut SkillEntry, slot_id: &str) {
         && binding.anim.is_none()
         && binding.params.is_empty()
         && binding.attach == CueAttach::default()
+        && binding.duration.is_none()
     {
         entry.timeline.cues.remove(slot_id);
     }
@@ -282,6 +303,76 @@ fn effect_picker(
                         }
                     }
                 });
+            ui.end_row();
+        });
+    changed
+}
+
+/// The Duration row: how long the bound effect PLAYS (emits) before the host stops emission and
+/// lets live particles drain out on their authored lifetimes. `None` = auto — the effect preset's
+/// own Duration (the VFX editor field), else the host default — with the resolved value shown in
+/// the auto button so the designer always sees what they'll get. Explicit ⇄ auto round-trips
+/// without losing the resolved number (switching to explicit seeds the drag value from it).
+fn duration_picker(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    duration: &mut Option<f32>,
+    effect_name: Option<&str>,
+    vfx: &VfxLibrary,
+) -> bool {
+    let mut changed = false;
+    let auto_value =
+        resolve_cue_duration(None, effect_name.and_then(|n| vfx.effects.get(n)));
+    egui::Grid::new(("cue_duration_grid", id_salt.to_string()))
+        .num_columns(2)
+        .spacing(GRID_SPACING)
+        .show(ui, |ui| {
+            grid_label(ui, "Duration");
+            ui.horizontal(|ui| {
+                match duration {
+                    Some(value) => {
+                        let mut v = *value;
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut v)
+                                .range(0.0..=60.0)
+                                .speed(0.05)
+                                .suffix(" s")
+                                .min_decimals(1),
+                        );
+                        if resp.changed() && (v - *value).abs() > f32::EPSILON {
+                            *duration = Some(v);
+                            changed = true;
+                        }
+                        if ui
+                            .small_button("auto")
+                            .on_hover_text(format!(
+                                "Clear the authored duration — falls back to {auto_value:.1}s \
+                                 (the effect preset's own Duration, else the default)."
+                            ))
+                            .clicked()
+                        {
+                            *duration = None;
+                            changed = true;
+                        }
+                    }
+                    None => {
+                        if ui
+                            .button(format!("auto ({auto_value:.1} s)"))
+                            .on_hover_text(
+                                "Playing on auto: the effect preset's own Duration (set it in \
+                                 the VFX editor), else the host default. Click to author an \
+                                 explicit duration for THIS cue. Particles always finish their \
+                                 own lifetimes after the duration ends — this tunes how long \
+                                 the effect EMITS.",
+                            )
+                            .clicked()
+                        {
+                            *duration = Some(auto_value);
+                            changed = true;
+                        }
+                    }
+                }
+            });
             ui.end_row();
         });
     changed

@@ -661,6 +661,8 @@ pub fn despawn_stage(
     }
     for mut life in &mut cosmetics {
         life.elapsed = life.duration;
+        // Teardown wants the INSTANT clear, not the natural particle drain.
+        life.drain = Some(0.0);
     }
 }
 
@@ -701,6 +703,8 @@ impl PreviewStageReset<'_, '_> {
         }
         for mut life in self.cosmetics.iter_mut() {
             life.elapsed = life.duration;
+            // Reset wants the INSTANT clear (replay from t=0), not the natural drain.
+            life.drain = Some(0.0);
         }
         for (e, _) in self.casters.iter() {
             self.commands.entity(e).interrupt_cast();
