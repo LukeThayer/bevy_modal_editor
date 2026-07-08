@@ -19,7 +19,11 @@ use std::path::Path;
 
 use bevy::prelude::*;
 
-const EFFECTS_DIR: &str = "assets/effects";
+/// The editor-managed effect preset library dir, under the ASSET SERVER root (so a host game
+/// shell saves where its game loads). In the editor repo the root is "assets" — unchanged.
+fn effects_dir() -> std::path::PathBuf {
+    crate::ui::asset_browser::asset_scan_root().join("effects")
+}
 
 /// Editor effect plugin: the `bevy_effect` runtime plus preset
 /// initialization and `.fx.ron` auto-save.
@@ -43,7 +47,7 @@ fn init_effect_library(mut library: ResMut<EffectLibrary>) {
     for (name, marker) in presets::default_presets() {
         library.effects.entry(name.to_string()).or_insert(marker);
     }
-    load_effects_from_dir(&mut library, Path::new(EFFECTS_DIR));
+    load_effects_from_dir(&mut library, &effects_dir());
 }
 
 // ---------------------------------------------------------------------------
@@ -60,7 +64,7 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 fn save_preset_to_disk(name: &str, marker: &EffectMarker) {
-    let dir = Path::new(EFFECTS_DIR);
+    let dir = &effects_dir();
     if let Err(e) = std::fs::create_dir_all(dir) {
         warn!("Failed to create effects directory: {}", e);
         return;

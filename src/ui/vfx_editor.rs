@@ -608,6 +608,7 @@ fn draw_vfx_panel(world: &mut World) {
 
     let mut pin_toggled = false;
     let mut save_preset_clicked = false;
+    let mut save_copy_clicked = false;
     let mut browse_presets_clicked = false;
     let mut restart_clicked = false;
 
@@ -633,11 +634,25 @@ fn draw_vfx_panel(world: &mut World) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                 pin_toggled = draw_pin_button(ui, is_pinned);
                 if ui
-                    .button(egui::RichText::new("Save Preset").small().color(colors::ACCENT_GREEN))
-                    .on_hover_text("Save current VFX system as a named preset")
+                    .button(egui::RichText::new("Save").small().color(colors::ACCENT_GREEN))
+                    .on_hover_text(
+                        "Save under this entity's name — UPDATES the existing preset of the \
+                         same name in place (and on disk). Rename the entity first to save \
+                         under a different name.",
+                    )
                     .clicked()
                 {
                     save_preset_clicked = true;
+                }
+                if ui
+                    .button(egui::RichText::new("Save Copy").small().color(colors::ACCENT_GREEN))
+                    .on_hover_text(
+                        "Save as a NEW preset — an existing name gets a numeric suffix \
+                         ('Explosion 2') so nothing is overwritten.",
+                    )
+                    .clicked()
+                {
+                    save_copy_clicked = true;
                 }
                 if ui
                     .button(egui::RichText::new("Browse").small().color(colors::ACCENT_ORANGE))
@@ -927,25 +942,29 @@ fn draw_vfx_panel(world: &mut World) {
         }
     }
 
-    if save_preset_clicked {
+    if save_preset_clicked || save_copy_clicked {
         let mut library = world.resource_mut::<VfxLibrary>();
-        let preset_name = {
-            let base = if entity_name.is_empty() { "New VFX".to_string() } else { entity_name };
-            if !library.effects.contains_key(&base) {
-                base
-            } else {
-                let mut candidate = base.clone();
-                for i in 2.. {
-                    candidate = format!("{} {}", base, i);
-                    if !library.effects.contains_key(&candidate) {
-                        break;
-                    }
+        let base = if entity_name.is_empty() { "New VFX".to_string() } else { entity_name };
+        // "Save" UPSERTS under the entity's name (updating the preset you're editing — the
+        // auto-saver rewrites its .vfx.ron); "Save Copy" keeps the old never-overwrite dedup.
+        let preset_name = if save_copy_clicked && library.effects.contains_key(&base) {
+            let mut candidate = base.clone();
+            for i in 2.. {
+                candidate = format!("{} {}", base, i);
+                if !library.effects.contains_key(&candidate) {
+                    break;
                 }
-                candidate
             }
+            candidate
+        } else {
+            base
         };
-        library.effects.insert(preset_name.clone(), system);
-        info!("Saved VFX preset '{}'", preset_name);
+        let updated = library.effects.insert(preset_name.clone(), system).is_some();
+        info!(
+            "{} VFX preset '{}'",
+            if updated { "Updated" } else { "Saved" },
+            preset_name
+        );
     }
 
     if browse_presets_clicked {

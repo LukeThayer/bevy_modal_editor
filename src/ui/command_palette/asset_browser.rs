@@ -120,7 +120,11 @@ pub fn set_asset_scan_root(root: std::path::PathBuf) {
     let _ = ASSET_SCAN_ROOT.set(root);
 }
 
-fn asset_scan_root() -> &'static Path {
+/// The asset server's root as recorded by [`set_asset_scan_root`] (fallback: the CWD-relative
+/// `assets/`). Public: the vfx/effect preset auto-savers write their libraries HERE (so an edit
+/// saved in a host game's editor shell lands where that game's asset loading actually reads),
+/// not into a possibly-different CWD `assets/`.
+pub fn asset_scan_root() -> &'static Path {
     ASSET_SCAN_ROOT
         .get()
         .map(|p| p.as_path())

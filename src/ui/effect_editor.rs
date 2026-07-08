@@ -364,6 +364,7 @@ fn draw_effect_panel(world: &mut World) {
     // Collect deferred actions
     let mut pin_toggled = false;
     let mut save_preset_clicked = false;
+    let mut save_copy_clicked = false;
     let mut browse_presets_clicked = false;
     let mut play_clicked = false;
     let mut pause_clicked = false;
@@ -388,6 +389,7 @@ fn draw_effect_panel(world: &mut World) {
         &mut pause_clicked,
         &mut stop_clicked,
         &mut save_preset_clicked,
+        &mut save_copy_clicked,
         &mut browse_presets_clicked,
     );
 
@@ -527,34 +529,38 @@ fn draw_effect_panel(world: &mut World) {
         }
     }
 
-    // Save preset
-    if save_preset_clicked {
+    // Save preset. "Save" UPSERTS under the entity's name (updating the preset you're editing —
+    // the auto-saver rewrites its .fx.ron); "Save Copy" keeps the old never-overwrite dedup.
+    if save_preset_clicked || save_copy_clicked {
         let name_for_preset = entity_name.clone();
         let marker_for_save = world.get::<EffectMarker>(entity).cloned().unwrap_or_default();
         let mut library = world.resource_mut::<EffectLibrary>();
-        let preset_name = {
-            let base = if name_for_preset.is_empty() {
-                "New Effect".to_string()
-            } else {
-                name_for_preset
-            };
-            if !library.effects.contains_key(&base) {
-                base
-            } else {
-                let mut candidate = base.clone();
-                for i in 2.. {
-                    candidate = format!("{} {}", base, i);
-                    if !library.effects.contains_key(&candidate) {
-                        break;
-                    }
-                }
-                candidate
-            }
+        let base = if name_for_preset.is_empty() {
+            "New Effect".to_string()
+        } else {
+            name_for_preset
         };
-        library
+        let preset_name = if save_copy_clicked && library.effects.contains_key(&base) {
+            let mut candidate = base.clone();
+            for i in 2.. {
+                candidate = format!("{} {}", base, i);
+                if !library.effects.contains_key(&candidate) {
+                    break;
+                }
+            }
+            candidate
+        } else {
+            base
+        };
+        let updated = library
             .effects
-            .insert(preset_name.clone(), marker_for_save);
-        info!("Saved effect preset '{}'", preset_name);
+            .insert(preset_name.clone(), marker_for_save)
+            .is_some();
+        info!(
+            "{} effect preset '{}'",
+            if updated { "Updated" } else { "Saved" },
+            preset_name
+        );
     }
 
     // Browse presets
@@ -659,6 +665,7 @@ fn draw_rules_panel(
     pause_clicked: &mut bool,
     stop_clicked: &mut bool,
     save_preset_clicked: &mut bool,
+    save_copy_clicked: &mut bool,
     browse_presets_clicked: &mut bool,
 ) {
     let available_height = panel::available_height(ctx);
@@ -754,14 +761,32 @@ fn draw_rules_panel(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .button(
-                            egui::RichText::new("Save Preset")
+                            egui::RichText::new("Save")
                                 .small()
                                 .color(colors::ACCENT_GREEN),
                         )
-                        .on_hover_text("Save current effect as a named preset")
+                        .on_hover_text(
+                            "Save under this entity's name — UPDATES the existing preset of \
+                             the same name in place (and on disk). Rename the entity first to \
+                             save under a different name.",
+                        )
                         .clicked()
                     {
                         *save_preset_clicked = true;
+                    }
+                    if ui
+                        .button(
+                            egui::RichText::new("Save Copy")
+                                .small()
+                                .color(colors::ACCENT_GREEN),
+                        )
+                        .on_hover_text(
+                            "Save as a NEW preset — an existing name gets a numeric suffix \
+                             ('Explosion 2') so nothing is overwritten.",
+                        )
+                        .clicked()
+                    {
+                        *save_copy_clicked = true;
                     }
                     if ui
                         .button(

@@ -14,7 +14,11 @@ use bevy_vfx::{VfxLibrary, VfxSystem};
 
 use crate::materials::{apply_material_def_standalone, remove_all_material_components, resolve_material_ref, set_entity_base_color, set_entity_emissive, set_entity_uv_transform};
 
-const VFX_DIR: &str = "assets/vfx";
+/// The editor-managed vfx preset library dir, under the ASSET SERVER root (so a host game
+/// shell saves where its game loads). In the editor repo the root is "assets" — unchanged.
+fn vfx_dir() -> std::path::PathBuf {
+    crate::ui::asset_browser::asset_scan_root().join("vfx")
+}
 
 pub struct VfxEditorPlugin;
 
@@ -58,7 +62,7 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 fn save_preset_to_disk(name: &str, system: &VfxSystem) {
-    let dir = Path::new(VFX_DIR);
+    let dir = &vfx_dir();
     if let Err(e) = std::fs::create_dir_all(dir) {
         warn!("Failed to create vfx directory: {}", e);
         return;
@@ -81,7 +85,7 @@ fn save_preset_to_disk(name: &str, system: &VfxSystem) {
 }
 
 fn load_presets_from_disk(library: &mut VfxLibrary) {
-    load_vfx_presets_from_dir(library, Path::new(VFX_DIR));
+    load_vfx_presets_from_dir(library, &vfx_dir());
 }
 
 /// Load every `*.vfx.ron` preset in `dir` into `library` (name = filename minus the

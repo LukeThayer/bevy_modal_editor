@@ -291,13 +291,16 @@ pub fn scan_and_merge_root(
         skill_library.roots.push(root.to_path_buf());
     }
     load_effects_from_dir(effect_library, &root.join("assets").join("effects"));
-    crate::vfx::load_vfx_presets_from_dir(vfx_library, &root.join("assets").join("vfx"));
-    // ALSO scan the root's `assets/skills/` for `*.vfx.ron` — the obelisk-arena game client
-    // loads vfx presets from BOTH dirs (`for dir in ["assets/vfx", "assets/skills"]`, its
-    // `init_vfx_library`), and skill-adjacent presets are authored next to their `.cast.ron`
-    // (e.g. `blizzard_frost.vfx.ron`). Without this, a cue bound to such a preset rendered
-    // in-game but NOTHING in the Skill preview ("blizzard shows nothing when played").
+    // Scan the root's `assets/skills/` for `*.vfx.ron` — skill-adjacent presets are authored
+    // next to their `.cast.ron` (e.g. `blizzard_frost.vfx.ron`), and the obelisk-arena game
+    // client loads vfx presets from BOTH dirs. Without this, a cue bound to such a preset
+    // rendered in-game but NOTHING in the Skill preview ("blizzard shows nothing when played").
+    // ORDER MATTERS: skills/ loads FIRST (the hand-authored seed), assets/vfx/ LAST — the
+    // editor-managed library dir the auto-saver writes, so a designer's saved edit to a preset
+    // that started life next to a skill WINS on a name collision (the game loads in the same
+    // order — its `init_vfx_library`).
     crate::vfx::load_vfx_presets_from_dir(vfx_library, &root.join("assets").join("skills"));
+    crate::vfx::load_vfx_presets_from_dir(vfx_library, &root.join("assets").join("vfx"));
 }
 
 /// `Startup` system: ensures the starter Effect presets exist (fresh-install safety —
