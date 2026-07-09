@@ -152,6 +152,7 @@ pub fn spawn_preview_rig_scene(
     scenes: Option<Res<bevy_editor_game::SceneLibrary>>,
     casters: Query<Entity, With<PreviewCaster>>,
     existing: Query<(), With<PreviewCasterRigScene>>,
+    mut warned: Local<bool>,
     mut commands: Commands,
 ) {
     let (Some(rig), Some(scenes)) = (rig, scenes) else {
@@ -161,7 +162,18 @@ pub fn spawn_preview_rig_scene(
         return;
     }
     let Some(scene) = scenes.scenes.get(&rig.scene_key).cloned() else {
-        return; // gltf not indexed yet — retry next frame
+        // Library already indexed but the key isn't in it: a misnamed key would otherwise fail
+        // SILENTLY (capsule stays forever) — say so once, with the keys that DO exist.
+        if !scenes.scenes.is_empty() && !*warned {
+            *warned = true;
+            let mut keys: Vec<&String> = scenes.scenes.keys().collect();
+            keys.sort();
+            warn!(
+                "PreviewCasterRig scene_key '{}' not found in the SceneLibrary — available: {:?}",
+                rig.scene_key, keys
+            );
+        }
+        return; // gltf not indexed yet (or misnamed) — retry next frame
     };
     for caster in &casters {
         let child = commands
@@ -179,6 +191,7 @@ pub fn spawn_preview_rig_scene(
             // The capsule stand-in gives way to the real body.
             .remove::<Mesh3d>()
             .remove::<MeshMaterial3d<StandardMaterial>>();
+        info!("preview rig: spawned '{}' under the preview caster", rig.scene_key);
     }
 }
 
