@@ -25,6 +25,13 @@ pub struct ChargeTierPreview {
     anim: Option<String>,
 }
 
+impl ChargeTierPreview {
+    /// Whether this tier holds an anim clip (the idle baseline gives way to it).
+    pub fn has_anim(&self) -> bool {
+        self.anim.is_some()
+    }
+}
+
 /// Drive the tier preview from the charge slider. Runs every frame in Skill mode; cheap when
 /// the open skill has no tiers.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]

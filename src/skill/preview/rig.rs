@@ -139,6 +139,37 @@ pub struct PreviewCasterRig {
     pub offset: Vec3,
     /// Local yaw (radians) of the scene root (glTF import facing convention).
     pub yaw: f32,
+    /// `AnimationLibrary` key of the rest-pose clip (e.g. `"character::idle"`). When set,
+    /// [`drive_preview_idle`] holds it at weight 1 whenever nothing else claims the rig —
+    /// without a baseline clip every weight stays 0 and the model T-poses.
+    pub idle_clip: Option<String>,
+}
+
+/// Baseline animation: hold the host's idle clip on the preview rig, giving way while a charge
+/// tier holds its own pose ([`super::charge::ChargeTierPreview`] drives that clip itself).
+pub fn drive_preview_idle(
+    rig: Option<Res<PreviewCasterRig>>,
+    state: Res<PreviewAnimGraph>,
+    casters: Query<Entity, With<PreviewCaster>>,
+    charge_holds: Query<&super::charge::ChargeTierPreview>,
+    children: Query<&Children>,
+    mut players: Query<&mut AnimationPlayer>,
+) {
+    let Some(idle_key) = rig.as_ref().and_then(|r| r.idle_clip.clone()) else {
+        return;
+    };
+    let Some(node) = state.nodes.get(&idle_key).copied() else {
+        return;
+    };
+    let overridden = charge_holds.iter().any(|c| c.has_anim());
+    let weight = if overridden { 0.0 } else { 1.0 };
+    for caster in &casters {
+        if let Some(pe) = find_anim_player(caster, &children, &players) {
+            if let Ok(mut player) = players.get_mut(pe) {
+                drive_anim_clip(&mut player, node, weight);
+            }
+        }
+    }
 }
 
 /// Marker: the preview caster's rig scene child (spawned once).
@@ -205,6 +236,7 @@ impl Plugin for PreviewRigPlugin {
                 spawn_preview_rig_scene,
                 build_preview_anim_graph,
                 attach_preview_anim_graph,
+                drive_preview_idle,
             )
                 .chain(),
         );
