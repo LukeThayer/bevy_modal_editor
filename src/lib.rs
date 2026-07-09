@@ -60,6 +60,13 @@ pub mod skill;
 pub mod ui;
 pub mod utils;
 
+/// Host hookup for the Skill mode preview caster rig: insert this resource (after
+/// `register_gltf_library(..)`) and the preview stage replaces its capsule stand-in with the
+/// named scene — lighting up the bone picker (socket index), the anim preview, and
+/// bone-anchored cue/charge preview.
+#[cfg(feature = "obelisk")]
+pub use skill::preview::rig::PreviewCasterRig;
+
 // Re-export the game API crate
 pub use bevy_editor_game;
 

@@ -515,6 +515,7 @@ mod tests {
             chargeable: false,
             max_hold: 1.0,
             cues: Default::default(),
+            charge_cues: Vec::new(),
         };
         assert!(matches!(
             window_motion_for_cue(&tl, "on_window_bolt"),

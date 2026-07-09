@@ -126,13 +126,74 @@ pub fn find_anim_player(root: Entity, children: &Query<&Children>, players: &Que
 }
 
 /// Wires the preview rig: the anim-graph state resource + the build/attach systems.
+/// Host-registered preview-caster rig: the `SceneLibrary` key of the scene to hang under the
+/// [`PreviewCaster`] (e.g. `"character::scene0"` after `register_gltf_library("character.glb")`)
+/// plus the host's rig conventions (foot offset, import yaw). When present,
+/// [`spawn_preview_rig_scene`] replaces the capsule stand-in with the real rig — lighting up the
+/// socket index (bone picker), the anim graph (clip preview), and bone-anchored cue preview.
+#[derive(Resource, Clone, Debug)]
+pub struct PreviewCasterRig {
+    pub scene_key: String,
+    /// Local translation of the scene root under the caster (e.g. a feet-rooted model's
+    /// negative half-height so its feet meet the capsule bottom).
+    pub offset: Vec3,
+    /// Local yaw (radians) of the scene root (glTF import facing convention).
+    pub yaw: f32,
+}
+
+/// Marker: the preview caster's rig scene child (spawned once).
+#[derive(Component)]
+pub struct PreviewCasterRigScene;
+
+/// Hang the host-registered rig scene under the preview caster (once the `SceneLibrary` has the
+/// key) and drop the capsule stand-in mesh from the caster root.
+pub fn spawn_preview_rig_scene(
+    rig: Option<Res<PreviewCasterRig>>,
+    scenes: Option<Res<bevy_editor_game::SceneLibrary>>,
+    casters: Query<Entity, With<PreviewCaster>>,
+    existing: Query<(), With<PreviewCasterRigScene>>,
+    mut commands: Commands,
+) {
+    let (Some(rig), Some(scenes)) = (rig, scenes) else {
+        return;
+    };
+    if !existing.is_empty() {
+        return;
+    }
+    let Some(scene) = scenes.scenes.get(&rig.scene_key).cloned() else {
+        return; // gltf not indexed yet — retry next frame
+    };
+    for caster in &casters {
+        let child = commands
+            .spawn((
+                PreviewCasterRigScene,
+                SceneRoot(scene.clone()),
+                Transform::from_translation(rig.offset)
+                    .with_rotation(Quat::from_rotation_y(rig.yaw)),
+                Visibility::default(),
+            ))
+            .id();
+        commands
+            .entity(caster)
+            .add_child(child)
+            // The capsule stand-in gives way to the real body.
+            .remove::<Mesh3d>()
+            .remove::<MeshMaterial3d<StandardMaterial>>();
+    }
+}
+
 pub struct PreviewRigPlugin;
 
 impl Plugin for PreviewRigPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PreviewAnimGraph>().add_systems(
             Update,
-            (build_preview_anim_graph, attach_preview_anim_graph).chain(),
+            (
+                spawn_preview_rig_scene,
+                build_preview_anim_graph,
+                attach_preview_anim_graph,
+            )
+                .chain(),
         );
     }
 }

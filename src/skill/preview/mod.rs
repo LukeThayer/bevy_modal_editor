@@ -18,6 +18,7 @@
 //!   strip's dynamic trailing extent, and the event-marker recorder. See that module's doc
 //!   comment for the full v1 -> v2 adaptation.
 
+pub mod charge;
 pub mod cosmetics;
 pub mod rig;
 pub mod scrub;
@@ -55,6 +56,6 @@ impl Plugin for SkillPreviewPlugin {
             .add_plugins(cosmetics::PreviewCosmeticsPlugin)
             .add_plugins(scrub::PreviewScrubPlugin)
             .init_resource::<sockets::RigSockets>()
-            .add_systems(Update, sockets::index_rig_sockets);
+            .add_systems(Update, (sockets::index_rig_sockets, charge::drive_charge_tier_preview));
     }
 }

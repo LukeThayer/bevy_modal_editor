@@ -41,7 +41,7 @@ use std::collections::HashMap;
 use bevy::asset::Handle;
 use bevy::math::Vec3;
 
-use obelisk_bevy::assets::{CastTimeline, CastTimelineHandles, WindowAnchor, WindowSpawn};
+use obelisk_bevy::assets::{CastTimeline, CastTimelineHandles, CueAttach, WindowAnchor, WindowSpawn};
 use obelisk_bevy::combat::system::{
     is_invalid_lifecycle_target, is_invalid_timeline_target, is_unsupported_timeline_condition,
 };
@@ -219,6 +219,74 @@ pub fn validate_skill(
         }
     }
 
+    // --- Charge tiers (charge_cues): mirror obelisk validate_timeline (blocking — a violating
+    // file fails the game asset load) + editor lookups (unknown effect/anim), targeted
+    // "cue:charge" so the Charge region renders them inline.
+    {
+        let target = "cue:charge".to_string();
+        let mut prev_threshold: Option<f32> = None;
+        for (i, tier) in entry.timeline.charge_cues.iter().enumerate() {
+            if !(0.0..=1.0).contains(&tier.threshold) {
+                problems.push(Problem {
+                    target: target.clone(),
+                    message: format!("charge tier {i} threshold must be within 0-100%"),
+                    blocking: true,
+                });
+            }
+            if let Some(prev) = prev_threshold
+                && tier.threshold <= prev
+            {
+                problems.push(Problem {
+                    target: target.clone(),
+                    message: format!("charge tier {i} threshold must be greater than tier {}'s", i - 1),
+                    blocking: true,
+                });
+            }
+            prev_threshold = Some(tier.threshold);
+            match &tier.cue.attach {
+                CueAttach::Follow => problems.push(Problem {
+                    target: target.clone(),
+                    message: format!("charge tier {i} may not use Follow attach"),
+                    blocking: true,
+                }),
+                CueAttach::Bone { socket, .. } if socket.is_empty() => problems.push(Problem {
+                    target: target.clone(),
+                    message: format!("charge tier {i} Bone attach needs a socket name"),
+                    blocking: true,
+                }),
+                _ => {}
+            }
+            if let Some(effect_name) = &tier.cue.effect {
+                let known = effects.effects.contains_key(effect_name)
+                    || vfx.effects.contains_key(effect_name);
+                if !known {
+                    problems.push(Problem {
+                        target: target.clone(),
+                        message: format!("charge tier {i} references unknown Effect preset '{effect_name}'"),
+                        blocking: true,
+                    });
+                }
+            }
+            if let Some(anim_name) = &tier.cue.anim
+                && let Some(anim_lib) = anim
+                && !anim_lib.clips.contains_key(anim_name)
+            {
+                problems.push(Problem {
+                    target: target.clone(),
+                    message: format!("charge tier {i} references unknown animation clip '{anim_name}'"),
+                    blocking: true,
+                });
+            }
+        }
+        if !entry.timeline.charge_cues.is_empty() && !entry.timeline.chargeable {
+            problems.push(Problem {
+                target,
+                message: "charge tiers are authored but Chargeable is off - they never play".to_string(),
+                blocking: false,
+            });
+        }
+    }
+
     // --- Template windows authoring non-default anchor/anchor_offset (follow-ups ticket 3) ---
     for w in &entry.timeline.collision_windows {
         if w.spawn == WindowSpawn::Template && (w.anchor != WindowAnchor::default() || w.anchor_offset != Vec3::ZERO) {
@@ -321,6 +389,7 @@ mod tests {
             chargeable: false,
             max_hold: 1.0,
             cues: Default::default(),
+            charge_cues: Vec::new(),
         }
     }
 

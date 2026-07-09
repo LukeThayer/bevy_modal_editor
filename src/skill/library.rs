@@ -109,6 +109,7 @@ pub(crate) fn blank_timeline(skill_id: &str) -> CastTimeline {
         chargeable: false,
         max_hold: 1.0,
         cues: Default::default(),
+        charge_cues: Vec::new(),
     }
 }
 

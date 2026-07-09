@@ -43,10 +43,13 @@ pub struct CueSlot {
     pub label: String,
     pub attach_legal: bool,
     pub anim_legal: bool,
+    /// Whether `CueAttach::Bone` is offered (caster-anchored slots — the effect can ride a
+    /// named rig joint).
+    pub bone_legal: bool,
 }
 
 fn on_cast_slot() -> CueSlot {
-    CueSlot { slot_id: "on_cast".to_string(), label: "On Cast".to_string(), attach_legal: false, anim_legal: true }
+    CueSlot { slot_id: "on_cast".to_string(), label: "On Cast".to_string(), attach_legal: false, anim_legal: true, bone_legal: true }
 }
 
 fn on_window_slot(id: &str) -> CueSlot {
@@ -55,6 +58,7 @@ fn on_window_slot(id: &str) -> CueSlot {
         label: format!("On Window: {id}"),
         attach_legal: true,
         anim_legal: false,
+        bone_legal: false,
     }
 }
 
@@ -64,15 +68,16 @@ fn on_end_slot(id: &str) -> CueSlot {
         label: format!("On End: {id}"),
         attach_legal: false,
         anim_legal: false,
+        bone_legal: false,
     }
 }
 
 fn emit_slot(id: &str) -> CueSlot {
-    CueSlot { slot_id: format!("emit_{id}"), label: format!("Emit: {id}"), attach_legal: true, anim_legal: false }
+    CueSlot { slot_id: format!("emit_{id}"), label: format!("Emit: {id}"), attach_legal: true, anim_legal: false, bone_legal: false }
 }
 
 fn on_hit_slot() -> CueSlot {
-    CueSlot { slot_id: "on_hit".to_string(), label: "On Hit".to_string(), attach_legal: false, anim_legal: false }
+    CueSlot { slot_id: "on_hit".to_string(), label: "On Hit".to_string(), attach_legal: false, anim_legal: false, bone_legal: false }
 }
 
 /// The ordered set of cue slots `timeline` offers for presentation binding — see the module
@@ -119,6 +124,7 @@ mod tests {
             chargeable: false,
             max_hold: 1.0,
             cues: Default::default(),
+            charge_cues: Vec::new(),
         }
     }
 

@@ -274,6 +274,10 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
     // The scrub strip (Task 11): read-only snapshots of the scrub session + its event-marker log
     // + the live-Play mirror, alongside every other resource this closure reads. `Option`
     // because a minimal test app may draw this panel without `PreviewScrubPlugin` registered.
+    let sockets: Vec<String> = world
+        .get_resource::<preview::sockets::RigSockets>()
+        .map(|s| s.names.clone())
+        .unwrap_or_default();
     let scrub = world.get_resource::<preview::ScrubSim>();
     let scrub_markers = world.get_resource::<preview::ScrubMarkers>();
     let playhead = world.get_resource::<preview::Playhead>();
@@ -420,6 +424,7 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
                                     effect_library,
                                     vfx_library,
                                     anim_library,
+                                    &sockets,
                                     &report,
                                     &mut jump_to_effect_mode,
                                 );
@@ -846,6 +851,7 @@ fn skill_probe(
                 chargeable: false,
                 max_hold: 1.0,
                 cues: Default::default(),
+                charge_cues: Vec::new(),
             };
             // Rules borrowed from the Projectile template (id/name/delivery/starter damage
             // shape) — only its TIMELINE is discarded in favor of the bespoke one above.
@@ -894,6 +900,7 @@ fn skill_probe(
                 chargeable: false,
                 max_hold: 1.0,
                 cues: Default::default(),
+                charge_cues: Vec::new(),
             };
             // Rules borrowed from the Strike template, same reasoning as `demo_rules` above.
             let (mut demo_explosion_rules, _) =

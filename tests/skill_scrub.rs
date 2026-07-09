@@ -259,6 +259,7 @@ fn fireball_timeline() -> CastTimeline {
         chargeable: false,
         max_hold: 1.0,
         cues: Default::default(),
+        charge_cues: Vec::new(),
     }
 }
 
@@ -309,6 +310,7 @@ fn fireball_explosion_timeline() -> CastTimeline {
         chargeable: false,
         max_hold: 1.0,
         cues: Default::default(),
+        charge_cues: Vec::new(),
     }
 }
 

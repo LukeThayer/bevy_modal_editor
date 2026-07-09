@@ -46,7 +46,8 @@
 
 use bevy_egui::egui;
 
-use obelisk_bevy::assets::{CueAttach, CueBinding, CueParam, ParamSource};
+use bevy::math::Vec3;
+use obelisk_bevy::assets::{ChargeCue, CueAttach, CueBinding, CueParam, ParamSource};
 
 use bevy_editor_game::AnimationLibrary;
 use bevy_vfx::VfxLibrary;
@@ -67,6 +68,7 @@ pub fn draw_presentation_region(
     effects: &EffectLibrary,
     vfx: &VfxLibrary,
     anims: Option<&AnimationLibrary>,
+    sockets: &[String],
     report: &ValidationReport,
     jump_to_effect_mode: &mut bool,
 ) {
@@ -74,15 +76,160 @@ pub fn draw_presentation_region(
     let effect_options = combined_effect_options(effects, vfx);
     let anim_options = anim_clip_options(anims);
 
+    changed |= draw_charge_region(ui, entry, &effect_options, &anim_options, sockets, report);
+
     let slots = cue_slots(&entry.timeline);
     for slot in &slots {
-        changed |= draw_cue_row(ui, slot, entry, &effect_options, &anim_options, vfx, report, jump_to_effect_mode);
+        changed |= draw_cue_row(
+            ui, slot, entry, &effect_options, &anim_options, sockets, vfx, report,
+            jump_to_effect_mode,
+        );
         ui.add_space(4.0);
     }
 
     if changed {
         entry.dirty_timeline = true;
     }
+}
+
+/// The CHARGE (hold) region: the skill's `charge_cues` tiers — while the player holds the cast
+/// button, the highest tier at or below the live charge fraction plays (bone-anchored effect
+/// loop + anim + charge-driven scale). One card per tier; `+ Add tier` appends above the last
+/// threshold. Tiers keep themselves sorted; validation flags duplicates/out-of-range. Shown for
+/// every skill (a non-chargeable skill gets a hint — tiers only ever play on chargeable holds).
+fn draw_charge_region(
+    ui: &mut egui::Ui,
+    entry: &mut SkillEntry,
+    effect_options: &[(String, String)],
+    anim_options: &[String],
+    sockets: &[String],
+    report: &ValidationReport,
+) -> bool {
+    let mut changed = false;
+
+    ui.label(
+        egui::RichText::new("Charge (hold)")
+            .strong()
+            .color(colors::TEXT_PRIMARY),
+    );
+    if !entry.timeline.chargeable && !entry.timeline.charge_cues.is_empty() {
+        ui.label(
+            egui::RichText::new(
+                "Chargeable is OFF (Behavior region) — these tiers never play in-game.",
+            )
+            .small()
+            .color(colors::STATUS_WARNING),
+        );
+    }
+    for problem in report.for_cue("charge") {
+        let color = if problem.blocking { colors::STATUS_ERROR } else { colors::STATUS_WARNING };
+        ui.label(egui::RichText::new(&problem.message).small().color(color));
+    }
+
+    let mut remove: Option<usize> = None;
+    let tier_count = entry.timeline.charge_cues.len();
+    for i in 0..tier_count {
+        let salt = format!("charge_tier_{i}");
+        let frame = egui::Frame::new()
+            .fill(colors::BG_MEDIUM)
+            .corner_radius(egui::CornerRadius::same(4))
+            .inner_margin(egui::Margin::same(6));
+        frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("Tier {i}"))
+                        .strong()
+                        .color(colors::ACCENT_ORANGE),
+                );
+                ui.label(egui::RichText::new("from").small().color(colors::TEXT_MUTED));
+                let mut pct = entry.timeline.charge_cues[i].threshold * 100.0;
+                if ui
+                    .add(egui::DragValue::new(&mut pct).speed(1.0).range(0.0..=100.0).suffix("%"))
+                    .changed()
+                {
+                    entry.timeline.charge_cues[i].threshold = (pct / 100.0).clamp(0.0, 1.0);
+                    changed = true;
+                }
+                ui.label(egui::RichText::new("charge").small().color(colors::TEXT_MUTED));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(egui::RichText::new("\u{2715}").small()).on_hover_text("Remove tier").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            });
+
+            // Effect picker (same combined library list as the cue rows).
+            let mut effect_value = entry.timeline.charge_cues[i].cue.effect.clone();
+            if effect_picker(ui, &salt, &mut effect_value, effect_options) {
+                entry.timeline.charge_cues[i].cue.effect = effect_value;
+                changed = true;
+            }
+
+            // Attach: World (follows the caster's body) or Bone (a rig socket). Never Follow.
+            let mut attach = entry.timeline.charge_cues[i].cue.attach.clone();
+            if attach_picker(ui, &salt, &mut attach, false, true, sockets) {
+                entry.timeline.charge_cues[i].cue.attach = attach;
+                changed = true;
+            }
+
+            // Anim: loops on the caster's rig while this tier holds.
+            let mut anim_value = entry.timeline.charge_cues[i].cue.anim.clone();
+            if anim_picker(ui, &salt, &mut anim_value, anim_options) {
+                entry.timeline.charge_cues[i].cue.anim = anim_value;
+                changed = true;
+            }
+
+            // "Grows with charge": the scale <- Charge param row, as a designer-facing toggle
+            // (the host streams the LIVE fraction into the loop).
+            let has_scale = entry.timeline.charge_cues[i]
+                .cue
+                .params
+                .iter()
+                .any(|p| p.param == "scale" && matches!(p.source, ParamSource::Charge));
+            let mut grows = has_scale;
+            if ui.checkbox(&mut grows, "Grows with charge (scale)").changed() {
+                let params = &mut entry.timeline.charge_cues[i].cue.params;
+                if grows {
+                    params.push(CueParam { param: "scale".into(), source: ParamSource::Charge });
+                } else {
+                    params.retain(|p| !(p.param == "scale" && matches!(p.source, ParamSource::Charge)));
+                }
+                changed = true;
+            }
+        });
+        ui.add_space(4.0);
+    }
+    if let Some(i) = remove {
+        entry.timeline.charge_cues.remove(i);
+        changed = true;
+    }
+    if ui.button("+ Add tier").clicked() {
+        let next = entry
+            .timeline
+            .charge_cues
+            .last()
+            .map(|t| (t.threshold + 0.3).min(1.0))
+            .unwrap_or(0.0);
+        entry.timeline.charge_cues.push(ChargeCue {
+            threshold: next,
+            cue: CueBinding {
+                params: vec![CueParam { param: "scale".into(), source: ParamSource::Charge }],
+                ..Default::default()
+            },
+        });
+        changed = true;
+    }
+    if changed {
+        // Keep tiers ordered (the schema requires strictly-ascending; equal thresholds are
+        // flagged by validation rather than silently nudged).
+        entry
+            .timeline
+            .charge_cues
+            .sort_by(|a, b| a.threshold.total_cmp(&b.threshold));
+    }
+    ui.add_space(6.0);
+    ui.separator();
+    changed
 }
 
 /// `(display label, stored name)`. Every `EffectLibrary` key first (no suffix, UNLESS it
@@ -139,6 +286,7 @@ fn draw_cue_row(
     entry: &mut SkillEntry,
     effect_options: &[(String, String)],
     anim_options: &[String],
+    sockets: &[String],
     vfx: &VfxLibrary,
     report: &ValidationReport,
     jump_to_effect_mode: &mut bool,
@@ -191,9 +339,14 @@ fn draw_cue_row(
         // effect is chosen. No write happens unless the user actually picks a non-default value
         // (`attach_picker`/`anim_picker` only report `changed` on a real click), so merely
         // rendering an unbound row's pickers never fabricates a `CueBinding`.
-        if slot.attach_legal {
-            let mut attach = entry.timeline.cues.get(&slot.slot_id).map(|b| b.attach).unwrap_or_default();
-            if attach_picker(ui, &slot.slot_id, &mut attach) {
+        if slot.attach_legal || slot.bone_legal {
+            let mut attach = entry
+                .timeline
+                .cues
+                .get(&slot.slot_id)
+                .map(|b| b.attach.clone())
+                .unwrap_or_default();
+            if attach_picker(ui, &slot.slot_id, &mut attach, slot.attach_legal, slot.bone_legal, sockets) {
                 changed = true;
                 set_or_clear_field(entry, &slot.slot_id, |b| b.attach = attach);
             }
@@ -378,7 +531,14 @@ fn duration_picker(
     changed
 }
 
-fn attach_picker(ui: &mut egui::Ui, id_salt: &str, attach: &mut CueAttach) -> bool {
+fn attach_picker(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    attach: &mut CueAttach,
+    follow_legal: bool,
+    bone_legal: bool,
+    sockets: &[String],
+) -> bool {
     let mut changed = false;
     egui::Grid::new(("cue_attach_grid", id_salt.to_string()))
         .num_columns(2)
@@ -386,12 +546,13 @@ fn attach_picker(ui: &mut egui::Ui, id_salt: &str, attach: &mut CueAttach) -> bo
         .show(ui, |ui| {
             grid_label(ui, "Attach");
             let label = match attach {
-                CueAttach::World => "World",
-                CueAttach::Follow => "Follow",
+                CueAttach::World => "World".to_string(),
+                CueAttach::Follow => "Follow".to_string(),
+                CueAttach::Bone { socket, .. } => format!("Bone: {socket}"),
             };
             egui::ComboBox::from_id_salt(("cue_attach_picker", id_salt.to_string()))
                 .selected_text(label)
-                .width(100.0)
+                .width(140.0)
                 .show_ui(ui, |ui| {
                     if ui.selectable_label(*attach == CueAttach::World, "World").clicked()
                         && *attach != CueAttach::World
@@ -399,15 +560,77 @@ fn attach_picker(ui: &mut egui::Ui, id_salt: &str, attach: &mut CueAttach) -> bo
                         *attach = CueAttach::World;
                         changed = true;
                     }
-                    if ui.selectable_label(*attach == CueAttach::Follow, "Follow").clicked()
+                    if follow_legal
+                        && ui.selectable_label(*attach == CueAttach::Follow, "Follow").clicked()
                         && *attach != CueAttach::Follow
                     {
                         *attach = CueAttach::Follow;
                         changed = true;
                     }
+                    let is_bone = matches!(attach, CueAttach::Bone { .. });
+                    if bone_legal && ui.selectable_label(is_bone, "Bone\u{2026}").clicked() && !is_bone {
+                        // Default to the first indexed socket (or empty — the socket combo
+                        // below lets the author pick).
+                        *attach = CueAttach::Bone {
+                            socket: sockets.first().cloned().unwrap_or_default(),
+                            offset: Vec3::ZERO,
+                        };
+                        changed = true;
+                    }
                 });
             ui.end_row();
         });
+    if let CueAttach::Bone { socket, offset } = attach {
+        egui::Grid::new(("cue_bone_grid", id_salt.to_string()))
+            .num_columns(2)
+            .spacing(GRID_SPACING)
+            .show(ui, |ui| {
+                grid_label(ui, "Socket");
+                if sockets.is_empty() {
+                    // No rig indexed (no PreviewCasterRig registered / scene still loading) —
+                    // free-text so authoring never blocks on the preview.
+                    if ui.text_edit_singleline(socket).changed() {
+                        changed = true;
+                    }
+                } else {
+                    egui::ComboBox::from_id_salt(("cue_socket_picker", id_salt.to_string()))
+                        .selected_text(socket.clone())
+                        .width(160.0)
+                        .show_ui(ui, |ui| {
+                            for name in sockets {
+                                if ui.selectable_label(socket == name, name).clicked()
+                                    && socket != name
+                                {
+                                    *socket = name.clone();
+                                    changed = true;
+                                }
+                            }
+                        });
+                }
+                ui.end_row();
+                grid_label(ui, "Offset");
+                ui.horizontal(|ui| {
+                    for (axis, v) in [("x", &mut offset.x), ("y", &mut offset.y), ("z", &mut offset.z)] {
+                        ui.label(egui::RichText::new(axis).small().color(colors::TEXT_MUTED));
+                        if ui
+                            .add(egui::DragValue::new(v).speed(0.01).range(-2.0..=2.0))
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                    }
+                });
+                ui.end_row();
+            });
+        ui.label(
+            egui::RichText::new(
+                "Bone: the effect parents to this named rig joint (offset in the bone's local \
+                 frame) and rides the animation. An unknown socket falls back to the rig root.",
+            )
+            .small()
+            .color(colors::TEXT_MUTED),
+        );
+    }
     if *attach == CueAttach::Follow {
         ui.label(
             egui::RichText::new(

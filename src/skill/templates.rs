@@ -148,6 +148,7 @@ pub fn strike_template(id: &str) -> (Skill, CastTimeline) {
         chargeable: false,
         max_hold: 1.0,
         cues: cast_and_hit_cues(),
+        charge_cues: Vec::new(),
     };
     (rules, timeline)
 }
@@ -182,6 +183,7 @@ pub fn projectile_template(id: &str) -> (Skill, CastTimeline) {
         chargeable: false,
         max_hold: 1.0,
         cues: cast_and_hit_cues(),
+        charge_cues: Vec::new(),
     };
     (rules, timeline)
 }
@@ -221,6 +223,7 @@ pub fn zone_template(id: &str) -> (Skill, CastTimeline) {
         chargeable: false,
         max_hold: 1.0,
         cues: cast_and_hit_cues(),
+        charge_cues: Vec::new(),
     };
     (rules, timeline)
 }
@@ -262,6 +265,7 @@ pub fn beam_template(id: &str) -> (Skill, CastTimeline) {
         chargeable: false,
         max_hold: 1.0,
         cues: cast_and_hit_cues(),
+        charge_cues: Vec::new(),
     };
     (rules, timeline)
 }
