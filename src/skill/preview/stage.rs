@@ -689,6 +689,9 @@ pub struct PreviewStageReset<'w, 's> {
     rng: ResMut<'w, CombatRng>,
     cooldowns: ResMut<'w, Cooldowns>,
     previewing: ResMut<'w, PreviewCastSkill>,
+    /// Host rig registration (hand launch offset) — `Option` so a test harness without a
+    /// registered rig previews from the caster origin, the pre-hand behavior.
+    rig: Option<Res<'w, super::rig::PreviewCasterRig>>,
 }
 
 impl PreviewStageReset<'_, '_> {
@@ -819,38 +822,40 @@ pub fn stage_cast(reset: &mut PreviewStageReset, skill_id: &str, tl: &CastTimeli
         );
         return;
     };
+    // Host casting-hand launch offset (PreviewCasterRig.hand_offset, LOCAL aim frame), rotated
+    // to the stage aim's yaw — the previewed projectile/window spawns from the same point the
+    // game's does. The facade helpers pass muzzle ZERO, so the muzzle is stamped post-insert.
+    let hand = reset.rig.as_ref().map(|r| r.hand_offset).unwrap_or(Vec3::ZERO);
+    let aim_point_dir = match &aim {
+        StageAim::Entity(e) => reset
+            .dummies
+            .iter()
+            .find(|(de, _)| de == e)
+            .map(|(_, tf)| tf.translation - caster_tf.translation),
+        StageAim::Point(p) => Some(*p - caster_tf.translation),
+        StageAim::Direction(d) => Some(*d),
+    }
+    .unwrap_or(Vec3::X);
+    let yaw = (-aim_point_dir.x).atan2(-aim_point_dir.z);
+    let muzzle_offset = Quat::from_axis_angle(Vec3::Y, yaw) * hand;
     reset.previewing.0 = Some(skill_id.to_string());
     reset.commands.entity(caster).grant_skill(skill_id.to_string());
     let mut ec = reset.commands.entity(caster);
-    match aim {
-        StageAim::Entity(target) => match charge {
-            Some(c) => {
-                ec.cast_skill_at_charged(skill_id.to_string(), target, c);
-            }
-            None => {
-                ec.cast_skill_at(skill_id.to_string(), target);
-            }
-        },
-        StageAim::Point(point) => match charge {
-            Some(c) => {
-                ec.cast_skill_at_point_charged(skill_id.to_string(), point, c);
-            }
-            None => {
-                ec.cast_skill_at_point(skill_id.to_string(), point);
-            }
-        },
+    // Direct `PendingCast` (not the `CastSkillExt` facade): the facade hardcodes muzzle ZERO,
+    // and the preview must launch from the host's casting hand like the game does.
+    let cast_aim = match aim {
+        StageAim::Entity(target) => obelisk_bevy::timeline::cast::CastAim::Entity(target),
+        StageAim::Point(point) => obelisk_bevy::timeline::cast::CastAim::Point(point),
         StageAim::Direction(dir) => {
-            let dir3 = Dir3::new(dir).unwrap_or(Dir3::X);
-            match charge {
-                Some(c) => {
-                    ec.cast_skill_dir_charged(skill_id.to_string(), dir3, c);
-                }
-                None => {
-                    ec.cast_skill_dir(skill_id.to_string(), dir3);
-                }
-            }
+            obelisk_bevy::timeline::cast::CastAim::Direction(Dir3::new(dir).unwrap_or(Dir3::X))
         }
-    }
+    };
+    ec.insert(obelisk_bevy::timeline::cast::PendingCast {
+        skill_id: skill_id.to_string(),
+        aim: cast_aim,
+        charge,
+        muzzle_offset,
+    });
 }
 
 /// On a `GameStartedEvent` (Play): reset the stage and cast the CURRENTLY OPEN skill on it — the

@@ -143,6 +143,12 @@ pub struct PreviewCasterRig {
     /// [`drive_preview_idle`] holds it at weight 1 whenever nothing else claims the rig —
     /// without a baseline clip every weight stays 0 and the model T-poses.
     pub idle_clip: Option<String>,
+    /// The host's casting-hand LAUNCH offset in the caster's LOCAL aim frame (+X = right,
+    /// +Y = up from the body center, -Z = forward). Preview casts pass it (rotated to the
+    /// stage aim) as `PendingCast.muzzle_offset`, so previewed projectiles/windows launch from
+    /// the same point the game's do (and the same socket bone-anchored cues ride). ZERO =
+    /// launch from the caster origin (the pre-hand behavior).
+    pub hand_offset: Vec3,
 }
 
 /// Baseline animation: hold the host's idle clip on the preview rig, giving way while a charge

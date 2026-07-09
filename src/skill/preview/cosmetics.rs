@@ -12,15 +12,16 @@
 //!   params: Vec<CueParam> }` — ONE effect name, ONE attach mode (`World` or `Follow`), no
 //!   per-binding socket name, no offset, no author-set lifetime. This port renders that leaner
 //!   shape faithfully rather than inventing schema the dependency doesn't have:
-//!     - no per-binding socket NAME exists to resolve (unlike v1's per-lane socket string), so
-//!       `sockets::RigSockets`/`resolve_socket` are wired (indexed, ready for a future schema/
-//!       asset that supplies one) but have no call site in this file: EVERY cue cosmetic spawns
-//!       UNPARENTED at the cue's own world position — `CueAttach::World`'s own doc comment is
-//!       explicit that it "does not track its source afterward," so parenting a `World`-attached
-//!       `on_cast`/`on_window_*`/`emit_*` cosmetic to the caster (which DOES move, in a general
-//!       game, even though this preview's caster happens to stand still) would be a real
-//!       correctness bug, not a harmless simplification — caught and fixed during this task's own
-//!       probe pass (see the port report's "concerns" section).
+//!     - `CueAttach::Bone { socket, offset }` (the schema `sockets::RigSockets` was indexed FOR)
+//!       re-parents the spawned cosmetic onto the preview rig's named joint, so a bone-anchored
+//!       flash rides the animated hand exactly like the game client's; an unknown socket falls
+//!       back to the caster root. `CueAttach::World` cosmetics still spawn UNPARENTED at the
+//!       cue's own world position — `World`'s own doc comment is explicit that it "does not
+//!       track its source afterward," so parenting a `World`-attached `on_cast`/`on_window_*`/
+//!       `emit_*` cosmetic to the caster (which DOES move, in a general game, even though this
+//!       preview's caster happens to stand still) would be a real correctness bug, not a
+//!       harmless simplification — caught and fixed during this task's own probe pass (see the
+//!       port report's "concerns" section).
 //!     - `CueAttach::Follow` (legal only on `on_window_*`/`emit_*`) is v2's replacement for v1's
 //!       dedicated "projectile lane": "the host flies a proxy along the cue's motion data" —
 //!       ported as [`PreviewFlight`], computed from the FIRED window's authored `VolumeMotion`
@@ -256,6 +257,7 @@ pub fn on_preview_cue(
     vfx: Res<VfxLibrary>,
     graph: Res<PreviewAnimGraph>,
     caster_q: Query<(Entity, &ActiveCast), With<PreviewCaster>>,
+    sockets: Res<super::sockets::RigSockets>,
     children: Query<&Children>,
     mut players: Query<&mut AnimationPlayer>,
     mut flights: Query<(&mut CosmeticLifetime, &mut PreviewFlight, &mut Transform)>,
@@ -338,6 +340,23 @@ pub fn on_preview_cue(
         ev.position,
         &mut warned,
     );
+
+    // `CueAttach::Bone`: re-parent the spawned preview cosmetic onto the preview rig's named
+    // socket (local-frame offset) — the flash rides the animated hand, exactly like the game
+    // client (`sockets::RigSockets` was indexed-and-waiting for this schema since Task 10; an
+    // unknown socket falls back to the caster root).
+    if let CueAttach::Bone { socket, offset } = &binding.attach {
+        let parent = sockets
+            .by_name
+            .get(socket)
+            .copied()
+            .or(caster.map(|(e, _)| e));
+        if let Some(parent) = parent {
+            commands
+                .entity(spawned)
+                .insert((ChildOf(parent), Transform::from_translation(*offset)));
+        }
+    }
 
     if matches!(binding.attach, CueAttach::Follow) {
         let flight = match (window_motion_for_cue(tl, &ev.cue_id), caster) {
