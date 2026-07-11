@@ -9,10 +9,13 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::editor::{EditorMode, EditorState};
 use crate::effects::EffectLibrary;
+use crate::skill::preview::stage::{ground_marker, PreviewCaster};
+use crate::skill::preview::surfaces::{StagedPaint, StagedPaints};
 use crate::skill::{insert_new_skill, scan_and_merge_root, unique_id, SkillArchetype, SkillLibrary};
 use crate::ui::fuzzy_palette::{draw_fuzzy_palette, PaletteConfig, PaletteItem, PaletteResult, PaletteState};
 use crate::ui::theme::colors;
 use bevy_vfx::VfxLibrary;
+use obelisk_bevy::surfaces::{PaintSurface, SurfacePatch, SurfaceRegistry};
 
 use super::{CommandPaletteState, PaletteMode};
 
@@ -21,6 +24,11 @@ enum SkillRow {
     NewSkill(SkillArchetype),
     Rescan,
     Existing(String),
+    /// Stage a pre-paint of this surface type at the stage's ground-aim marker (Task 5): pushes a
+    /// [`StagedPaint`] (re-applied on every reset) AND paints it live now for instant feedback.
+    StagePaint(String),
+    /// Clear all staged pre-paints and despawn every live patch — back to bare ground (Task 5).
+    StageClearPaints,
 }
 
 struct SkillItem {
@@ -49,6 +57,8 @@ impl PaletteItem for SkillItem {
             SkillRow::NewSkill(_) => Some(colors::ACCENT_GREEN),
             SkillRow::Rescan => Some(colors::ACCENT_ORANGE),
             SkillRow::Existing(_) => None,
+            SkillRow::StagePaint(_) => Some(colors::ACCENT_CYAN),
+            SkillRow::StageClearPaints => Some(colors::STATUS_ERROR),
         }
     }
 
@@ -89,6 +99,7 @@ fn draw_skill_preset_palette(
     ctx: &egui::Context,
     state: &mut ResMut<CommandPaletteState>,
     library: &Res<SkillLibrary>,
+    registry: &Res<SurfaceRegistry>,
     commands: &mut Commands,
 ) -> Result {
     let mut palette_state = PaletteState::from_bridge(
@@ -118,6 +129,29 @@ fn draw_skill_preset_palette(
         enabled: true,
         suffix: None,
     });
+
+    // Surfaces (Task 5): a "stage: paint <id> patch" row per registered surface type + a
+    // clear-all row — present only when surface content is loaded (mirrors the New Skill rows'
+    // registry-gated visibility: an empty registry yields no Stage rows at all). A staged patch
+    // is re-applied on every reset AND lands at the ground-aim marker (`ground_marker`) — exactly
+    // where a `GroundPoint`-gated cast aims — so a surface-gated skill (frost_spire) is castable
+    // in-preview and survives scrub/Play/Reset.
+    let mut surface_ids: Vec<String> = registry.0.keys().cloned().collect();
+    surface_ids.sort();
+    if !surface_ids.is_empty() {
+        items.extend(surface_ids.iter().map(|id| SkillItem {
+            label: format!("Stage: paint {id} patch"),
+            row: SkillRow::StagePaint(id.clone()),
+            enabled: true,
+            suffix: None,
+        }));
+        items.push(SkillItem {
+            label: "Stage: clear staged paints".to_string(),
+            row: SkillRow::StageClearPaints,
+            enabled: true,
+            suffix: None,
+        });
+    }
 
     let mut ids: Vec<String> = library.skills.keys().cloned().collect();
     ids.sort();
@@ -210,6 +244,41 @@ fn draw_skill_preset_palette(
                         world.resource_mut::<SkillLibrary>().open = Some(id);
                     });
                 }
+                SkillRow::StagePaint(surface) => {
+                    let surface = surface.clone();
+                    commands.queue(move |world: &mut World| {
+                        // Stage at EXACTLY the stage's ground-aim marker (`ground_marker` — the
+                        // point `resolve_stage_acquisition` resolves a `GroundPoint` to), so the
+                        // staged patch is where a gated cast will aim. Push it into the durable
+                        // `StagedPaints` (re-applied on every reset) AND paint it live now for
+                        // instant feedback — the reset re-apply clears-then-repaints, so the live
+                        // patch and the staged entry converge on one patch, never a duplicate.
+                        let position = ground_marker();
+                        world.resource_mut::<StagedPaints>().0.push(StagedPaint {
+                            surface: surface.clone(),
+                            position,
+                        });
+                        let caster = {
+                            let mut q = world.query_filtered::<Entity, With<PreviewCaster>>();
+                            q.iter(world).next()
+                        };
+                        if let Some(caster) = caster {
+                            world.trigger(PaintSurface { surface, position, owner: caster });
+                        }
+                    });
+                }
+                SkillRow::StageClearPaints => {
+                    commands.queue(|world: &mut World| {
+                        world.resource_mut::<StagedPaints>().0.clear();
+                        let live: Vec<Entity> = {
+                            let mut q = world.query_filtered::<Entity, With<SurfacePatch>>();
+                            q.iter(world).collect()
+                        };
+                        for e in live {
+                            world.despawn(e);
+                        }
+                    });
+                }
             }
             state.open = false;
         }
@@ -233,6 +302,7 @@ pub(super) fn draw_skill_preset_palette_system(
     editor_state: Res<EditorState>,
     editor_mode: Res<State<EditorMode>>,
     library: Res<SkillLibrary>,
+    registry: Res<SurfaceRegistry>,
     mut commands: Commands,
 ) -> Result {
     if !editor_state.ui_enabled {
@@ -247,7 +317,7 @@ pub(super) fn draw_skill_preset_palette_system(
     }
 
     let ctx = contexts.ctx_mut()?;
-    draw_skill_preset_palette(ctx, &mut state, &library, &mut commands)
+    draw_skill_preset_palette(ctx, &mut state, &library, &registry, &mut commands)
 }
 
 #[cfg(test)]

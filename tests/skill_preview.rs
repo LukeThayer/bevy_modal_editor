@@ -19,8 +19,8 @@ use bevy_vfx::VfxLibrary;
 
 use obelisk_bevy::assets::{
     AcqFallback, Acquisition, CastTimeline, CollisionShape, CollisionWindow, HitFilter, HitMode,
-    MotionDirection, PaintMode, PaintSpec, PhaseDurations, VolumeMotion, WindowAnchor, WindowPhase,
-    WindowSpawn,
+    MotionDirection, PaintMode, PaintSpec, PhaseDurations, SurfaceRequirement, VolumeMotion,
+    WindowAnchor, WindowPhase, WindowSpawn,
 };
 use obelisk_bevy::core::spawn_rng::SpawnRng;
 use obelisk_bevy::surfaces::{
@@ -34,13 +34,13 @@ use bevy_modal_editor::effects::{data::EffectMarker, EffectLibrary};
 use bevy_modal_editor::skill::library::{SkillEntry, SkillLibrary};
 use bevy_modal_editor::skill::preview::{
     stage::{
-        PreviewCaster, PreviewDummy, PreviewSimPlugin, PreviewControllerPlugin, PreviewStageFloor,
-        PreviewStageReset, SPAWN_MARKERS,
+        ground_marker, PreviewCaster, PreviewDummy, PreviewSimPlugin, PreviewControllerPlugin,
+        PreviewStageFloor, PreviewStageReset, SPAWN_MARKERS,
     },
     rig::PreviewRigPlugin,
     cosmetics::{PreviewCosmetic, PreviewCosmeticsPlugin},
     sockets::{index_rig_sockets, RigSockets},
-    surfaces::{attach_patch_visuals, SurfacePatchVisual},
+    surfaces::{attach_patch_visuals, StagedPaint, StagedPaints, SurfacePatchVisual},
 };
 use bevy_modal_editor::skill::templates::SkillArchetype;
 
@@ -1166,5 +1166,188 @@ fn authored_surface_vfx_spawns_a_looping_vfx_child() {
         "an authored surface [visuals].vfx should spawn a looping VfxSystem child parented to a \
          patch (found {surface_vfx} of {} VfxSystem entities under {patches} patches)",
         vfx_entities.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Surfaces (Task 5, the flagship): the stage paint tool. `StagedPaints` is session state the
+// designer pre-paints via the palette; every `reset_stage` (Play, editor Reset, scrub restart)
+// re-applies it AFTER the Task-2 clear, so a surface-GATED cast is testable in-editor and the
+// scrubber stays honest (staged ground survives replay-from-t=0).
+// ---------------------------------------------------------------------------
+
+/// A `GroundPoint` cast GATED on a frost surface (spec §5.1): its `on_surface` requirement means
+/// the aimed point must land on a frost patch, else the sim rejects (`Fizzle`). One trivial Static
+/// `CastPoint` window so the timeline is valid — the test asserts on the GATE, not the window.
+/// `snap: true, consume: true`: an accepted cast recenters on the matched patch AND spends it.
+fn spire_probe_timeline() -> CastTimeline {
+    CastTimeline {
+        skill_id: "spire_probe".to_string(),
+        phase_durations: PhaseDurations { windup: 0.05, active: 0.1, recovery: 0.05 },
+        collision_windows: vec![CollisionWindow {
+            id: "probe".to_string(),
+            spawn: WindowSpawn::Scheduled { phase: WindowPhase::Active, offset: 0.0 },
+            anchor: WindowAnchor::CastPoint,
+            anchor_offset: Vec3::ZERO,
+            strikes: true,
+            active_duration: 0.2,
+            shape: CollisionShape::Sphere { radius: 1.0 },
+            motion: VolumeMotion::Static,
+            motion_direction: Default::default(),
+            hit_filter: HitFilter::Enemies,
+            hit_mode: HitMode::OncePerTarget,
+            rehit_interval: None,
+            emitter: None,
+            paints: None,
+        }],
+        acquisition: Acquisition::GroundPoint {
+            range: 60.0,
+            fallback: AcqFallback::Fizzle,
+            on_surface: Some(SurfaceRequirement {
+                surface: "frost".to_string(),
+                snap: true,
+                consume: true,
+            }),
+        },
+        vfx_cues: Default::default(),
+        chain_radius: 6.0,
+        chargeable: false,
+        max_hold: 1.0,
+        cues: Default::default(),
+        charge_cues: Vec::new(),
+    }
+}
+
+fn spire_probe_rules() -> Skill {
+    Skill {
+        id: "spire_probe".to_string(),
+        name: "Spire Probe".to_string(),
+        delivery: Delivery::Instant,
+        damage: DamageConfig {
+            base_damages: vec![BaseDamage::new(stat_core::DamageType::Fire, 5.0, 5.0)],
+            weapon_effectiveness: 0.0,
+            damage_effectiveness: 1.0,
+            ..DamageConfig::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// THE FLAGSHIP: a surface-gated cast that is impossible to test without staged ground. WITHOUT a
+/// staged frost patch the `on_surface` gate rejects the cast; WITH one staged at the stage's
+/// ground-aim marker (the SAME point `resolve_stage_acquisition` resolves a `GroundPoint` to —
+/// `ground_marker`), Play re-applies it through `reset_stage` and the cast BEGINS and CONSUMES it.
+/// A re-reset re-stages the consumed patch — staged state is durable across replays.
+#[test]
+fn staged_frost_makes_a_gated_cast_succeed() {
+    use bevy::ecs::system::RunSystemOnce;
+
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    insert_surface(&mut app, frost_surface());
+    insert_skill(&mut app, "spire_probe", spire_probe_rules(), spire_probe_timeline());
+    open_skill(&mut app, "spire_probe");
+    app.update();
+    app.update();
+
+    // WITHOUT staging: the GroundPoint cast is gated on a frost patch that isn't there. The stage
+    // resolves the aim to the ground marker (in range), so the sim-side `on_surface` check is what
+    // rejects — a paid Fizzle.
+    play(&mut app, 20);
+    {
+        let rec = app.world().resource::<EventRecorder>();
+        assert!(
+            rec.cast_rejected.iter().any(|r| r.skill_id == "spire_probe"),
+            "with no frost staged, the on_surface gate must REJECT the gated cast — rejected: {:?}",
+            rec.cast_rejected
+                .iter()
+                .map(|r| (r.skill_id.clone(), format!("{:?}", r.reason)))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !rec.cast_began.iter().any(|c| c.skill_id == "spire_probe"),
+            "the gated cast must NOT begin without the required frost surface"
+        );
+    }
+    assert_eq!(surface_patch_count(&mut app), 0, "no patch exists without staging");
+
+    // Clear the recorder so the WITH-staging assertions read only this phase's events.
+    *app.world_mut().resource_mut::<EventRecorder>() = EventRecorder::default();
+
+    // WITH a frost paint staged AT the stage's ground-aim marker (`ground_marker` — exactly where a
+    // `GroundPoint` stage cast aims): Play funnels through `reset_stage`, which re-applies the
+    // staged patch BEFORE the cast pends, so the gate now matches.
+    app.world_mut().resource_mut::<StagedPaints>().0.push(StagedPaint {
+        surface: "frost".to_string(),
+        position: ground_marker(),
+    });
+    play(&mut app, 20);
+    {
+        let rec = app.world().resource::<EventRecorder>();
+        assert!(
+            rec.cast_began.iter().any(|c| c.skill_id == "spire_probe"),
+            "a staged frost patch under the aim marker must let the gated cast BEGIN — began: {:?}, \
+             rejected: {:?}",
+            rec.cast_began.iter().map(|c| c.skill_id.clone()).collect::<Vec<_>>(),
+            rec.cast_rejected
+                .iter()
+                .map(|r| (r.skill_id.clone(), format!("{:?}", r.reason)))
+                .collect::<Vec<_>>()
+        );
+    }
+    // `consume: true`: the accepted cast spent the staged patch (back to bare ground).
+    assert_eq!(
+        surface_patch_count(&mut app),
+        0,
+        "the gated cast (consume: true) must have consumed the staged frost patch"
+    );
+
+    // Durable: a re-reset re-applies the staged patch — staged state survives being consumed, so
+    // the next replay starts from the same ground.
+    app.world_mut()
+        .run_system_once(|mut reset: PreviewStageReset| reset.reset_stage())
+        .expect("stage reset runs");
+    assert_eq!(
+        surface_patch_count(&mut app),
+        1,
+        "a re-reset must re-stage the consumed frost patch (staged state is durable across replays)"
+    );
+}
+
+/// Scrub restart re-sims from t=0 through `reset_stage`; a staged paint must be re-applied on EVERY
+/// reset, exactly once — the reset clears first, so no duplication accrues across restarts.
+#[test]
+fn staged_paints_survive_scrub_restart() {
+    use bevy::ecs::system::RunSystemOnce;
+
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    insert_surface(&mut app, frost_surface());
+    // Settle so the caster (the re-applied paint's owner) exists before the first reset.
+    app.update();
+    app.update();
+
+    app.world_mut().resource_mut::<StagedPaints>().0.push(StagedPaint {
+        surface: "frost".to_string(),
+        position: ground_marker(),
+    });
+
+    app.world_mut()
+        .run_system_once(|mut reset: PreviewStageReset| reset.reset_stage())
+        .expect("stage reset runs");
+    assert_eq!(
+        surface_patch_count(&mut app),
+        1,
+        "the first reset re-applies exactly one staged patch"
+    );
+
+    app.world_mut()
+        .run_system_once(|mut reset: PreviewStageReset| reset.reset_stage())
+        .expect("stage reset runs");
+    assert_eq!(
+        surface_patch_count(&mut app),
+        1,
+        "a second reset clears THEN re-applies — still exactly one patch, not two (re-applied \
+         after the clear, never duplicated)"
     );
 }

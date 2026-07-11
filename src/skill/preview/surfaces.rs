@@ -36,6 +36,23 @@ use crate::editor::EditorMode;
 #[derive(Component)]
 pub struct SurfacePatchVisual;
 
+/// Session-scoped staged ground state (spec §9 / D12's stage-setup direction): pre-painted patches
+/// the designer placed via the palette, re-applied on EVERY stage reset (Play, editor Reset, scrub
+/// restart — all re-sim from t=0) so surface-GATED casts (the frost-spire pattern) are testable and
+/// the scrubber stays honest. Re-application lives at the END of
+/// [`super::stage::PreviewStageReset::reset_stage`], AFTER the Task-2 clear — one funnel covers all
+/// three replay entry points. Never serialized — pure session state.
+#[derive(Resource, Default)]
+pub struct StagedPaints(pub Vec<StagedPaint>);
+
+/// One staged pre-paint: a `surface` type to paint at a world `position` (the painter/owner is the
+/// preview caster, resolved at re-apply time — see `reset_stage`).
+#[derive(Clone, Debug)]
+pub struct StagedPaint {
+    pub surface: String,
+    pub position: Vec3,
+}
+
 /// The default decal tint (white, 0.8 alpha) when a surface authors no `[visuals].color`.
 const DEFAULT_DECAL_COLOR: Color = Color::srgba(1.0, 1.0, 1.0, 0.8);
 /// The default decal texture key when a surface authors no `[visuals].decal`. `asset_server.load`

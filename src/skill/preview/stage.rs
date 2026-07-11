@@ -491,6 +491,10 @@ impl Plugin for PreviewControllerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Playhead>()
             .init_resource::<PreviewCastSkill>()
+            // Task 5: staged pre-paints are session state re-applied on every stage reset. Init
+            // here (alongside the reset lifecycle that consumes them) so `PreviewStageReset`'s
+            // `Res<StagedPaints>` always resolves — including on the from-scratch test harness.
+            .init_resource::<super::surfaces::StagedPaints>()
             // Finding 1 (Task 10 review): the stage is scoped to `EditorMode::Skill` — a fresh
             // stage spawns on every entry, torn down on exit, mirroring `MeshModelPlugin`'s
             // pre-existing `OnEnter`/`OnExit(EditorMode::Blockout)` precedent (`src/modeling/
@@ -572,7 +576,11 @@ fn dummy_layout(entry: Option<&SkillEntry>) -> Vec<Vec3> {
 /// [`resolve_stage_acquisition`]). Fixed at marker 1: the same spot the default (non-chaining)
 /// dummy stands, so "a dummy under the aim point for GroundPoint skills" holds by construction —
 /// no separate marker gizmo entity is needed.
-fn ground_marker() -> Vec3 {
+///
+/// `pub` (Task 5): the stage paint tool stages a patch at EXACTLY this point (`skill_preset.rs`'s
+/// `StagePaint` row + the `staged_frost_makes_a_gated_cast_succeed` test), so a staged patch lands
+/// precisely where a `GroundPoint`-gated cast will aim — one source of truth, no duplicated literal.
+pub fn ground_marker() -> Vec3 {
     SPAWN_MARKERS[1]
 }
 
@@ -707,6 +715,9 @@ pub struct PreviewStageReset<'w, 's> {
     surface_seq: ResMut<'w, obelisk_bevy::surfaces::SurfaceSeq>,
     standing: ResMut<'w, obelisk_bevy::surfaces::StandingState>,
     spawn_rng: ResMut<'w, obelisk_bevy::core::spawn_rng::SpawnRng>,
+    /// Staged pre-paints re-applied AFTER the clear on every reset (Task 5) — the designer's
+    /// pre-painted ground, restored deterministically for each replay-from-t=0.
+    staged: Res<'w, super::surfaces::StagedPaints>,
     /// Host rig registration (hand launch offset) — `Option` so a test harness without a
     /// registered rig previews from the caster origin, the pre-hand behavior.
     rig: Option<Res<'w, super::rig::PreviewCasterRig>>,
@@ -731,8 +742,9 @@ impl PreviewStageReset<'_, '_> {
         // derived spawn seed (`seed ^ SPAWN_RNG_SEED_XOR` with seed 0), the value a real game host
         // seeds SpawnRng to — so the preview draws the SAME jitter the game would.
         //
-        // SEAM (Task 5): this re-zero runs BEFORE any staged re-application. When the panel gains a
-        // "pre-paint the stage" authoring step, it must re-apply its staged patches AFTER this clear.
+        // SEAM (Task 5): this clear + re-zero runs BEFORE the staged re-application at the END of
+        // this fn (`self.staged`) — the pre-painted ground is restored AFTER bare ground so each
+        // replay starts identically, and `on_paint_surface`'s dedup never sees a just-cleared patch.
         for e in self.patches.iter() {
             self.commands.entity(e).try_despawn();
         }
@@ -756,6 +768,23 @@ impl PreviewStageReset<'_, '_> {
         *self.rng = CombatRng::default();
         *self.cooldowns = Default::default();
         self.previewing.0 = None;
+
+        // Staged paints re-apply AFTER the clear — the deterministic pre-state for every replay
+        // (Play, editor Reset, scrub restart all funnel through here). Owner = the preview caster
+        // (its faction is snapshotted at paint; the caster always exists once the stage is built,
+        // and a stage-less reset simply finds none and no-ops). The `commands.trigger` is deferred:
+        // it fires when THIS reset's command buffer flushes, AFTER the patch despawns queued above,
+        // so `on_paint_surface`'s dedup snapshot never sees a just-cleared patch — one patch per
+        // staged entry, never duplicated across restarts, never merged against stale ground.
+        if let Some((caster, _)) = self.casters.iter().next() {
+            for staged in &self.staged.0 {
+                self.commands.trigger(obelisk_bevy::surfaces::PaintSurface {
+                    surface: staged.surface.clone(),
+                    position: staged.position,
+                    owner: caster,
+                });
+            }
+        }
     }
 }
 
