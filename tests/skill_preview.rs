@@ -39,6 +39,7 @@ use bevy_modal_editor::skill::preview::{
         PreviewStageFloor, PreviewStageReset, SPAWN_MARKERS,
     },
     rig::PreviewRigPlugin,
+    scrub::{PreviewScrubPlugin, ScrubMode, ScrubSim},
     cosmetics::{PreviewCosmetic, PreviewCosmeticsPlugin},
     sockets::{index_rig_sockets, RigSockets},
     surfaces::{
@@ -48,6 +49,14 @@ use bevy_modal_editor::skill::preview::{
 use bevy_modal_editor::skill::templates::SkillArchetype;
 
 fn test_app() -> App {
+    test_app_with(false)
+}
+
+/// `with_scrub` adds [`PreviewScrubPlugin`] — the freeze machinery (`ScrubSim` + the `sim_unfrozen`
+/// gate on the obelisk surfaces sets) that only the frozen-scrub regression test needs. Every other
+/// test keeps the minimal harness (`with_scrub == false`); the real `SkillPreviewPlugin` always
+/// includes the scrub plugin, so `true` is the more faithful composition.
+fn test_app_with(with_scrub: bool) -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .add_plugins(bevy::asset::AssetPlugin {
@@ -80,6 +89,12 @@ fn test_app() -> App {
         .add_plugins(PreviewCosmeticsPlugin)
         .init_resource::<RigSockets>()
         .add_systems(Update, index_rig_sockets);
+    if with_scrub {
+        // Adds the `sim_unfrozen` gate on the obelisk surfaces sets. With the scrub Idle (the
+        // default) it is unconditionally unfrozen, so this is behavior-neutral until a test drives
+        // `ScrubSim` into a frozen mode.
+        app.add_plugins(PreviewScrubPlugin);
+    }
     // Some plugins (avian3d's diagnostics registration among them) defer resource setup to
     // `Plugin::finish()`, which `App::run()` calls automatically but manual `app.update()`
     // driving does not — must be called explicitly before the first update (mirrors
@@ -1371,6 +1386,76 @@ fn staged_paints_survive_scrub_restart() {
         1,
         "a second reset clears THEN re-applies — still exactly one patch, not two (re-applied \
          after the clear, never duplicated)"
+    );
+}
+
+/// FROZEN-SCRUB double reset — the production shape of the obelisk `SurfaceTickScratch` bug. While
+/// the scrub is FROZEN, the obelisk surfaces sets are gated OFF (they carry BOTH the Skill-mode gate
+/// and scrub's `sim_unfrozen` gate), so `apply_standing_payloads`'s tail — where the tick scratch's
+/// own per-tick clear is folded — never runs. A first frozen Reset paints the staged patch (leaving
+/// a `scratch.painted` entry the frozen sim will never clear); a second frozen Reset despawns that
+/// patch and re-triggers its paint, which obelisk's `try_paint` would WRONGLY suppress against the
+/// stale batch entry (the committed patch is gone from `existing`, but `painted` still names its
+/// position) — the staged ground silently vanishes until the sim unfreezes. `reset_stage` now clears
+/// the scratch itself (obelisk's `clear_surface_tick_scratch` doc: gated-window hosts must), so the
+/// re-paint survives. RED against the unfixed reset: the second frozen reset yields 0 patches.
+#[test]
+fn frozen_scrub_reset_reapplies_the_staged_patch() {
+    use bevy::ecs::system::RunSystemOnce;
+
+    let mut app = test_app_with(true);
+    enter_skill_mode(&mut app);
+    insert_surface(&mut app, frost_surface());
+    // Settle so the caster (the staged paint's owner) exists before the first reset. NO skill is
+    // opened on purpose: `drive_scrub` then returns early at `open_timeline`, so the directly-set
+    // Frozen mode below is never stomped back to Idle by the ambient scrub loop.
+    app.update();
+    app.update();
+    app.world_mut().resource_mut::<StagedPaints>().0.push(StagedPaint {
+        surface: "frost".to_string(),
+        position: ground_marker(),
+    });
+
+    // Freeze: Frozen + `exclusive_running` false (its default) ⇒ `sim_unfrozen` is false, so the
+    // surfaces sets — and the scratch clear folded into their tail — are gated off from here on.
+    app.world_mut().resource_mut::<ScrubSim>().mode = ScrubMode::Frozen;
+    assert_eq!(
+        app.world().resource::<ScrubSim>().mode,
+        ScrubMode::Frozen,
+        "precondition: the scrub is frozen, so the surfaces sim (and its per-tick scratch clear) \
+         does not run"
+    );
+
+    // First frozen reset: paints the staged patch and populates `scratch.painted`.
+    app.world_mut()
+        .run_system_once(|mut reset: PreviewStageReset| reset.reset_stage())
+        .expect("stage reset runs");
+    assert_eq!(
+        surface_patch_count(&mut app),
+        1,
+        "the first frozen reset re-applies the staged patch"
+    );
+
+    // A frozen frame in between: proves the scratch is NOT self-clearing while frozen. (An UNFROZEN
+    // update here would clear it via `apply_standing_payloads` and mask the bug — the whole point of
+    // freezing is that it does not.)
+    app.update();
+    assert_eq!(
+        surface_patch_count(&mut app),
+        1,
+        "the patch survives a frozen frame (no decay, no self-clear)"
+    );
+
+    // Second frozen reset: despawns the patch and re-triggers the staged paint. Without the reset's
+    // own scratch clear, the stale `painted` batch entry suppresses this re-paint (→ 0 patches).
+    app.world_mut()
+        .run_system_once(|mut reset: PreviewStageReset| reset.reset_stage())
+        .expect("stage reset runs");
+    assert_eq!(
+        surface_patch_count(&mut app),
+        1,
+        "a second FROZEN reset must re-stage the patch — the reset clears the tick scratch itself, \
+         so obelisk's same-tick dedup cannot suppress the re-paint against a stale batch entry"
     );
 }
 

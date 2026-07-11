@@ -715,6 +715,11 @@ pub struct PreviewStageReset<'w, 's> {
     surface_seq: ResMut<'w, obelisk_bevy::surfaces::SurfaceSeq>,
     standing: ResMut<'w, obelisk_bevy::surfaces::StandingState>,
     spawn_rng: ResMut<'w, obelisk_bevy::core::spawn_rng::SpawnRng>,
+    /// obelisk's same-tick paint/evict dedup ledger — cleared at the head of every reset (see
+    /// `reset_stage`) so a FROZEN-scrub Reset, whose gated surfaces systems never run the ledger's
+    /// own per-tick clear, can't leave stale `painted` entries that wrongly suppress the re-staged
+    /// paints below.
+    scratch: ResMut<'w, obelisk_bevy::surfaces::SurfaceTickScratch>,
     /// Staged pre-paints re-applied AFTER the clear on every reset (Task 5) — the designer's
     /// pre-painted ground, restored deterministically for each replay-from-t=0.
     staged: Res<'w, super::surfaces::StagedPaints>,
@@ -768,6 +773,14 @@ impl PreviewStageReset<'_, '_> {
         *self.rng = CombatRng::default();
         *self.cooldowns = Default::default();
         self.previewing.0 = None;
+
+        // The tick scratch's own per-tick clear rides the (Skill-mode + unfrozen)-gated surfaces
+        // systems (`apply_standing_payloads`'s tail); a FROZEN-scrub Reset would otherwise leave
+        // stale `painted` entries that wrongly suppress the staged re-paints below — the committed
+        // patch despawns queued above vanish from `try_paint`'s `existing` query, but the stale
+        // batch entry does not. obelisk's `clear_surface_tick_scratch` doc calls out that gated-
+        // window hosts must clear it themselves; this reset is that clear.
+        obelisk_bevy::surfaces::clear_surface_tick_scratch(&mut self.scratch);
 
         // Staged paints re-apply AFTER the clear — the deterministic pre-state for every replay
         // (Play, editor Reset, scrub restart all funnel through here). Owner = the preview caster
