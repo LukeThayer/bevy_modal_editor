@@ -10,7 +10,7 @@ use bevy_egui::{egui, EguiContexts};
 use crate::editor::{EditorMode, EditorState};
 use crate::effects::EffectLibrary;
 use crate::skill::preview::stage::{ground_marker, PreviewCaster};
-use crate::skill::preview::surfaces::{StagedPaint, StagedPaints};
+use crate::skill::preview::surfaces::{push_staged_dedup, StagedPaints};
 use crate::skill::{insert_new_skill, scan_and_merge_root, unique_id, SkillArchetype, SkillLibrary};
 use crate::ui::fuzzy_palette::{draw_fuzzy_palette, PaletteConfig, PaletteItem, PaletteResult, PaletteState};
 use crate::ui::theme::colors;
@@ -25,7 +25,7 @@ enum SkillRow {
     Rescan,
     Existing(String),
     /// Stage a pre-paint of this surface type at the stage's ground-aim marker (Task 5): pushes a
-    /// [`StagedPaint`] (re-applied on every reset) AND paints it live now for instant feedback.
+    /// [`StagedPaints`] entry (re-applied on every reset) AND paints it live now for instant feedback.
     StagePaint(String),
     /// Clear all staged pre-paints and despawn every live patch — back to bare ground (Task 5).
     StageClearPaints,
@@ -254,10 +254,9 @@ fn draw_skill_preset_palette(
                         // instant feedback — the reset re-apply clears-then-repaints, so the live
                         // patch and the staged entry converge on one patch, never a duplicate.
                         let position = ground_marker();
-                        world.resource_mut::<StagedPaints>().0.push(StagedPaint {
-                            surface: surface.clone(),
-                            position,
-                        });
+                        // Dedup on (surface, position): re-staging the same spot never grows the
+                        // durable list, but the instant paint below STILL fires (obelisk dedups it).
+                        push_staged_dedup(&mut world.resource_mut::<StagedPaints>(), &surface, position);
                         let caster = {
                             let mut q = world.query_filtered::<Entity, With<PreviewCaster>>();
                             q.iter(world).next()

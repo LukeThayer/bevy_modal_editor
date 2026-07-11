@@ -24,7 +24,8 @@ use obelisk_bevy::assets::{
 };
 use obelisk_bevy::core::spawn_rng::SpawnRng;
 use obelisk_bevy::surfaces::{
-    StandingState, SurfacePatch, SurfaceRegistry, SurfaceSeq, SurfaceType, SurfaceVisuals,
+    PaintSurface, StandingState, SurfacePatch, SurfaceRegistry, SurfaceSeq, SurfaceType,
+    SurfaceVisuals,
 };
 use obelisk_bevy::testkit::{EventRecorder, EventRecorderPlugin};
 use stat_core::{BaseDamage, DamageConfig, Delivery, Skill, SkillCondition};
@@ -40,7 +41,9 @@ use bevy_modal_editor::skill::preview::{
     rig::PreviewRigPlugin,
     cosmetics::{PreviewCosmetic, PreviewCosmeticsPlugin},
     sockets::{index_rig_sockets, RigSockets},
-    surfaces::{attach_patch_visuals, StagedPaint, StagedPaints, SurfacePatchVisual},
+    surfaces::{
+        attach_patch_visuals, push_staged_dedup, StagedPaint, StagedPaints, SurfacePatchVisual,
+    },
 };
 use bevy_modal_editor::skill::templates::SkillArchetype;
 
@@ -1026,6 +1029,25 @@ fn stage_reset_rezeroes_surface_and_spawn_streams() {
 
     // Pre-reset: the streams are "dirty" from the run.
     assert!(app.world().resource::<SurfaceSeq>().0 > 0, "paints advanced SurfaceSeq");
+    // Make the standing overlap by CONSTRUCTION, not by stage-layout luck: paint a frost patch
+    // directly at the caster's own position and step the sim once so `apply_standing_payloads`
+    // marks the caster inside it. (This precondition used to rely on the caster geometrically
+    // standing in the trail's FIRST splat — a stage-layout accident a future re-layout could break;
+    // painting under the caster guarantees the overlap regardless of where the trail lands.)
+    let (caster, caster_pos) = {
+        let mut q = app
+            .world_mut()
+            .query_filtered::<(Entity, &Transform), With<PreviewCaster>>();
+        let (e, t) = q.iter(app.world()).next().expect("the stage caster exists");
+        (e, t.translation)
+    };
+    app.world_mut().trigger(PaintSurface {
+        surface: "frost".to_string(),
+        position: caster_pos,
+        owner: caster,
+    });
+    app.update();
+    app.update();
     assert!(
         !app.world().resource::<StandingState>().inside_prev.is_empty(),
         "a combatant stands in a painted patch, so StandingState.inside_prev is populated"
@@ -1350,4 +1372,37 @@ fn staged_paints_survive_scrub_restart() {
         "a second reset clears THEN re-applies — still exactly one patch, not two (re-applied \
          after the clear, never duplicated)"
     );
+}
+
+/// `push_staged_dedup` (the palette's staged-paint push guard, extracted from the egui handler so
+/// it's unit-testable in isolation): staging the SAME (surface, position) twice must leave exactly
+/// ONE durable entry — a double-select never grows the list (the palette still fires the instant
+/// paint either way; obelisk dedups the live patch). A distinct surface OR position is a new entry.
+#[test]
+fn push_staged_dedup_collapses_identical_entries() {
+    let mut staged = StagedPaints::default();
+    let pos = ground_marker();
+
+    assert!(
+        push_staged_dedup(&mut staged, "frost", pos),
+        "the first push of a new (surface, position) must insert a durable entry"
+    );
+    assert_eq!(staged.0.len(), 1, "one staged entry after the first push");
+
+    assert!(
+        !push_staged_dedup(&mut staged, "frost", pos),
+        "re-staging the IDENTICAL (surface, position) must be skipped (deduped)"
+    );
+    assert_eq!(
+        staged.0.len(),
+        1,
+        "a second identical push must NOT grow the durable list (double-select dedup)"
+    );
+
+    // The dedup keys on BOTH fields — a distinct position (or surface) is a new entry.
+    assert!(
+        push_staged_dedup(&mut staged, "frost", pos + Vec3::X),
+        "a distinct position is a new entry, not a dedup"
+    );
+    assert_eq!(staged.0.len(), 2, "a distinct (surface, position) appends a second entry");
 }
