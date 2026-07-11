@@ -46,8 +46,10 @@ use bevy_egui::egui;
 
 use obelisk_bevy::assets::{
     AcqFallback, Acquisition, CastTimeline, CollisionShape, CollisionWindow, HitFilter, HitMode,
-    MotionDirection, VolumeMotion, WindowAnchor, WindowPhase, WindowSpawn,
+    MotionDirection, PaintMode, PaintSpec, SurfaceRequirement, VolumeMotion, WindowAnchor,
+    WindowPhase, WindowSpawn,
 };
+use obelisk_bevy::surfaces::SurfaceRegistry;
 
 use crate::skill::edits::{self, WindowArchetype};
 use crate::skill::library::SkillEntry;
@@ -69,6 +71,7 @@ pub fn draw_behavior_region(
     ui: &mut egui::Ui,
     entry: &mut SkillEntry,
     report: &ValidationReport,
+    surfaces: &SurfaceRegistry,
     selected_window: &mut Option<usize>,
 ) {
     let mut changed = false;
@@ -78,7 +81,7 @@ pub fn draw_behavior_region(
     });
 
     section_header(ui, "Acquisition", true, |ui| {
-        changed |= draw_acquisition_card(ui, &mut entry.timeline.acquisition);
+        changed |= draw_acquisition_card(ui, &mut entry.timeline.acquisition, surfaces);
     });
 
     // Live-validate the timeline AFTER this frame's Phases/Acquisition edits (both can
@@ -89,7 +92,7 @@ pub fn draw_behavior_region(
 
     let window_count = entry.timeline.collision_windows.len();
     section_header(ui, &format!("Windows ({window_count})"), true, |ui| {
-        changed |= draw_windows(ui, &mut entry.timeline, live_error.as_deref(), report, selected_window);
+        changed |= draw_windows(ui, &mut entry.timeline, live_error.as_deref(), report, surfaces, selected_window);
     });
 
     if changed {
@@ -240,7 +243,7 @@ fn acquisition_picker(ui: &mut egui::Ui, id_salt: impl std::hash::Hash, acq: &mu
     changed
 }
 
-fn draw_acquisition_card(ui: &mut egui::Ui, acq: &mut Acquisition) -> bool {
+fn draw_acquisition_card(ui: &mut egui::Ui, acq: &mut Acquisition, surfaces: &SurfaceRegistry) -> bool {
     let mut changed = false;
 
     let frame = egui::Frame::new()
@@ -269,12 +272,13 @@ fn draw_acquisition_card(ui: &mut egui::Ui, acq: &mut Acquisition) -> bool {
                         changed |= hit_filter_picker(ui, "acq_hitscan_filter", filter);
                         ui.end_row();
                     }
-                    Acquisition::GroundPoint { range, .. } => {
+                    Acquisition::GroundPoint { range, on_surface, .. } => {
                         grid_label(ui, "Range");
                         changed |= ui
                             .add(egui::DragValue::new(range).range(0.5..=200.0).speed(0.1).suffix(" m"))
                             .changed();
                         ui.end_row();
+                        changed |= draw_on_surface_rows(ui, "acq_on_surface", on_surface, surfaces);
                     }
                 }
             });
@@ -283,7 +287,7 @@ fn draw_acquisition_card(ui: &mut egui::Ui, acq: &mut Acquisition) -> bool {
             Acquisition::Aim | Acquisition::SelfPoint => {}
             Acquisition::HitscanEntity { fallback, .. } | Acquisition::GroundPoint { fallback, .. } => {
                 ui.add_space(2.0);
-                changed |= draw_fallback(ui, fallback, 0);
+                changed |= draw_fallback(ui, fallback, 0, surfaces);
             }
         }
     });
@@ -295,7 +299,7 @@ fn draw_acquisition_card(ui: &mut egui::Ui, acq: &mut Acquisition) -> bool {
 /// than that renders as a read-only note (matches the templates — `zone_template`'s
 /// `GroundPoint { fallback: Then(SelfPoint) }` is exactly one level; no archetype
 /// template goes deeper).
-fn draw_fallback(ui: &mut egui::Ui, fallback: &mut AcqFallback, depth: u8) -> bool {
+fn draw_fallback(ui: &mut egui::Ui, fallback: &mut AcqFallback, depth: u8, surfaces: &SurfaceRegistry) -> bool {
     let mut changed = false;
 
     if depth >= 2 {
@@ -351,12 +355,18 @@ fn draw_fallback(ui: &mut egui::Ui, fallback: &mut AcqFallback, depth: u8) -> bo
                             changed |= hit_filter_picker(ui, ("acq_fallback_inner_filter", depth), filter);
                             ui.end_row();
                         }
-                        Acquisition::GroundPoint { range, .. } => {
+                        Acquisition::GroundPoint { range, on_surface, .. } => {
                             grid_label(ui, "Range");
                             changed |= ui
                                 .add(egui::DragValue::new(range).range(0.5..=200.0).speed(0.1).suffix(" m"))
                                 .changed();
                             ui.end_row();
+                            changed |= draw_on_surface_rows(
+                                ui,
+                                ("acq_fallback_on_surface", depth),
+                                on_surface,
+                                surfaces,
+                            );
                         }
                     }
                 });
@@ -365,7 +375,7 @@ fn draw_fallback(ui: &mut egui::Ui, fallback: &mut AcqFallback, depth: u8) -> bo
                 Acquisition::Aim | Acquisition::SelfPoint => {}
                 Acquisition::HitscanEntity { fallback: inner_fb, .. }
                 | Acquisition::GroundPoint { fallback: inner_fb, .. } => {
-                    changed |= draw_fallback(ui, inner_fb, depth + 1);
+                    changed |= draw_fallback(ui, inner_fb, depth + 1, surfaces);
                 }
             }
         });
@@ -523,6 +533,7 @@ fn draw_windows(
     tl: &mut CastTimeline,
     live_error: Option<&str>,
     report: &ValidationReport,
+    surfaces: &SurfaceRegistry,
     selected_window: &mut Option<usize>,
 ) -> bool {
     let mut changed = false;
@@ -538,7 +549,7 @@ fn draw_windows(
     for i in 0..count {
         let id = tl.collision_windows[i].id.clone();
         let card_live_error = live_error.filter(|msg| msg.contains(&format!("'{id}'")));
-        let outcome = window_card(ui, i, tl, &template_ids, card_live_error, report, selected_window);
+        let outcome = window_card(ui, i, tl, &template_ids, card_live_error, report, surfaces, selected_window);
         changed |= outcome.changed;
         if outcome.remove_requested {
             remove_index = Some(i);
@@ -991,6 +1002,214 @@ fn draw_emitter_subcard(ui: &mut egui::Ui, idx: usize, tl: &mut CastTimeline, te
     changed
 }
 
+// ---------------------------------------------------------------------------
+// Surfaces (Task 4): the window `paints` sub-card + the acquisition `on_surface`
+// gate rows, plus their shared registry-backed pickers. `SurfaceRegistry` reaches here
+// threaded down `draw_behavior_region`'s signature chain — the same way `EffectLibrary`
+// reaches `panel::presentation`'s pickers.
+// ---------------------------------------------------------------------------
+
+/// Registry ids, sorted — the picker source of truth (free-text is never offered; an unknown id is
+/// blocked by `crate::skill::validation`, not typeable here).
+fn sorted_surface_ids(surfaces: &SurfaceRegistry) -> Vec<String> {
+    let mut ids: Vec<String> = surfaces.0.keys().cloned().collect();
+    ids.sort();
+    ids
+}
+
+/// The default surface for a freshly-enabled paint/gate: the first registry id, or `"frost"` when
+/// no surfaces are loaded (the picker then shows a muted "no surfaces loaded" note and validation
+/// blocks the unknown id until surface content is registered).
+fn first_surface_id_or_frost(surfaces: &SurfaceRegistry) -> String {
+    sorted_surface_ids(surfaces).into_iter().next().unwrap_or_else(|| "frost".to_string())
+}
+
+/// A registry-backed surface ComboBox (sorted ids only). With an EMPTY registry it renders a muted
+/// "no surfaces loaded" note in place of an empty ComboBox, showing the current value read-only —
+/// so the row is never a dead, unopenable widget.
+fn surface_picker(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash,
+    surface: &mut String,
+    surfaces: &SurfaceRegistry,
+) -> bool {
+    let mut changed = false;
+    let ids = sorted_surface_ids(surfaces);
+    if ids.is_empty() {
+        ui.label(
+            egui::RichText::new(format!("{surface} (no surfaces loaded)"))
+                .small()
+                .color(colors::TEXT_MUTED),
+        );
+        return false;
+    }
+    egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(surface.as_str())
+        .width(120.0)
+        .show_ui(ui, |ui| {
+            for id in &ids {
+                if ui.selectable_label(surface == id, id.as_str()).clicked() && surface != id {
+                    *surface = id.clone();
+                    changed = true;
+                }
+            }
+        });
+    changed
+}
+
+fn paint_mode_label(mode: &PaintMode) -> &'static str {
+    match mode {
+        PaintMode::OnEnd => "OnEnd",
+        PaintMode::Trail { .. } => "Trail\u{2026}",
+    }
+}
+
+fn paint_mode_picker(ui: &mut egui::Ui, id_salt: impl std::hash::Hash, mode: &mut PaintMode) -> bool {
+    let mut changed = false;
+    let current = paint_mode_label(mode);
+    egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(current)
+        .width(90.0)
+        .show_ui(ui, |ui| {
+            let options: [VariantOption<PaintMode>; 2] = [
+                ("OnEnd", || PaintMode::OnEnd),
+                ("Trail\u{2026}", || PaintMode::Trail { step: 0.8 }),
+            ];
+            for (label, make) in options {
+                if ui.selectable_label(current == label, label).clicked() && current != label {
+                    *mode = make();
+                    changed = true;
+                }
+            }
+        });
+    changed
+}
+
+/// The `on_surface` gate rows for a `GroundPoint` acquisition (spec §5.1): an enable checkbox
+/// toggling `None` <-> `Some(SurfaceRequirement { .. })`, then — when `Some` — Surface / Snap /
+/// Consume rows. Emitted INSIDE the caller's `Grid` (each row ends with `ui.end_row()`); the caller
+/// passes a DISTINCT `surface_salt` per arm (top-level vs fallback-inner) so the two Surface
+/// ComboBoxes never collide egui ids.
+fn draw_on_surface_rows(
+    ui: &mut egui::Ui,
+    surface_salt: impl std::hash::Hash,
+    on_surface: &mut Option<SurfaceRequirement>,
+    surfaces: &SurfaceRegistry,
+) -> bool {
+    let mut changed = false;
+
+    grid_label(ui, "On surface");
+    let mut has = on_surface.is_some();
+    if ui.checkbox(&mut has, "").changed() {
+        *on_surface = has.then(|| SurfaceRequirement {
+            surface: first_surface_id_or_frost(surfaces),
+            snap: true,
+            consume: false,
+        });
+        changed = true;
+    }
+    ui.end_row();
+
+    if let Some(req) = on_surface.as_mut() {
+        grid_label(ui, "Surface");
+        changed |= surface_picker(ui, surface_salt, &mut req.surface, surfaces);
+        ui.end_row();
+
+        grid_label(ui, "Snap");
+        let snap_resp = ui.checkbox(&mut req.snap, "");
+        changed |= snap_resp.changed();
+        snap_resp.on_hover_text("Recenter the cast point on the matched patch.");
+        ui.end_row();
+
+        grid_label(ui, "Consume");
+        let consume_resp = ui.checkbox(&mut req.consume, "");
+        changed |= consume_resp.changed();
+        consume_resp.on_hover_text("Remove the matched patch when the cast is accepted (spends the tile, spec D7).");
+        ui.end_row();
+    }
+    changed
+}
+
+/// The window `paints` sub-card (spec §5.1) — clones `draw_emitter_subcard`'s framed idiom, but
+/// toggled by an enable checkbox (per the task brief) rather than emitter's +/x buttons. Enabling
+/// seeds a sane default (`OnEnd`, radius 0.45, first registry surface or `frost`); the framed grid
+/// then edits Surface / Radius / Mode (+ a Trail `Step`) / Lifetime. Every mutation ORs into the
+/// returned `changed` flag (the window card's dirty-tracking).
+fn draw_paints_subcard(
+    ui: &mut egui::Ui,
+    idx: usize,
+    w: &mut CollisionWindow,
+    surfaces: &SurfaceRegistry,
+) -> bool {
+    let mut changed = false;
+    ui.add_space(4.0);
+
+    let mut has_paints = w.paints.is_some();
+    if ui.checkbox(&mut has_paints, "Paints surface").changed() {
+        w.paints = has_paints.then(|| PaintSpec {
+            surface: first_surface_id_or_frost(surfaces),
+            radius: 0.45,
+            mode: PaintMode::OnEnd,
+            lifetime: None,
+        });
+        changed = true;
+    }
+
+    let Some(paints) = w.paints.as_mut() else { return changed };
+
+    let frame = egui::Frame::new()
+        .fill(colors::BG_DARKEST)
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::same(6));
+    frame.show(ui, |ui| {
+        egui::Grid::new(("paints_grid", idx))
+            .num_columns(2)
+            .spacing(GRID_SPACING)
+            .show(ui, |ui| {
+                grid_label(ui, "Surface");
+                changed |= surface_picker(ui, ("paints_surface", idx), &mut paints.surface, surfaces);
+                ui.end_row();
+
+                grid_label(ui, "Radius");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut paints.radius).range(0.05..=10.0).speed(0.05).suffix(" m"))
+                    .changed();
+                ui.end_row();
+
+                grid_label(ui, "Mode");
+                changed |= paint_mode_picker(ui, ("paints_mode", idx), &mut paints.mode);
+                ui.end_row();
+
+                if let PaintMode::Trail { step } = &mut paints.mode {
+                    grid_label(ui, "Step");
+                    changed |= ui
+                        .add(egui::DragValue::new(step).range(0.1..=10.0).speed(0.05).suffix(" m"))
+                        .changed();
+                    ui.end_row();
+                }
+
+                grid_label(ui, "Lifetime");
+                // `Option<f32>` override via the same "0 = default" sentinel `draw_hits` uses for
+                // `rehit_interval` (a checkbox-free single DragValue): 0 clears the override back to
+                // the surface type's own lifetime; any positive value overrides it per-paint.
+                let mut lifetime = paints.lifetime.unwrap_or(0.0);
+                let resp = ui.add(
+                    egui::DragValue::new(&mut lifetime)
+                        .range(0.0..=600.0)
+                        .speed(0.1)
+                        .suffix(" s (0 = surface default)"),
+                );
+                if resp.changed() {
+                    paints.lifetime = (lifetime > 0.0).then_some(lifetime);
+                    changed = true;
+                }
+                ui.end_row();
+            });
+    });
+
+    changed
+}
+
 #[allow(clippy::too_many_arguments)] // one param per thing the card reads/writes; same
                                       // rationale as `panel::rules::trigger_card`.
 fn window_card(
@@ -1000,6 +1219,7 @@ fn window_card(
     template_ids: &[String],
     live_error: Option<&str>,
     report: &ValidationReport,
+    surfaces: &SurfaceRegistry,
     selected_window: &mut Option<usize>,
 ) -> WindowCardOutcome {
     let mut changed = false;
@@ -1073,6 +1293,8 @@ fn window_card(
         changed |= draw_hits(ui, idx, &mut tl.collision_windows[idx]);
 
         changed |= draw_emitter_subcard(ui, idx, tl, template_ids);
+
+        changed |= draw_paints_subcard(ui, idx, &mut tl.collision_windows[idx], surfaces);
     });
 
     // Accent stripe over the card's left edge, matching `panel::rules::trigger_card`'s

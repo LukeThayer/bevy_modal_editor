@@ -41,10 +41,14 @@ use std::collections::HashMap;
 use bevy::asset::Handle;
 use bevy::math::Vec3;
 
-use obelisk_bevy::assets::{CastTimeline, CastTimelineHandles, CueAttach, WindowAnchor, WindowSpawn};
+use obelisk_bevy::assets::{
+    AcqFallback, Acquisition, CastTimeline, CastTimelineHandles, CueAttach, PaintMode, WindowAnchor,
+    WindowSpawn,
+};
 use obelisk_bevy::combat::system::{
     is_invalid_lifecycle_target, is_invalid_timeline_target, is_unsupported_timeline_condition,
 };
+use obelisk_bevy::surfaces::SurfaceRegistry;
 use stat_core::{ConditionPhase, Skill};
 
 use bevy_editor_game::AnimationLibrary;
@@ -68,6 +72,9 @@ const MAX_TRIGGER_DEPTH: u32 = 8;
 /// - `"window:{window_id}"` — a `CollisionWindow` (Behavior region window cards).
 /// - `"cue:{slot_key}"` — a `CueBinding` slot (Presentation region, Task 9 — unconsumed today,
 ///   same "widen as regions grow their own validation" story `for_window` was added under).
+/// - `"acquisition"` — a `GroundPoint` `on_surface` surface-gate problem (Behavior region
+///   Acquisition card; surfaced in the header blocker list today, same "unconsumed until the
+///   region grows an inline lookup" story as `cue:`).
 /// - `"skill"` — not about any one card; shown only in the panel header's blocker list.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Problem {
@@ -119,6 +126,7 @@ pub fn validate_skill(
     library: &SkillLibrary,
     effects: &EffectLibrary,
     vfx: &VfxLibrary,
+    surfaces: &SurfaceRegistry,
     anim: Option<&AnimationLibrary>,
 ) -> ValidationReport {
     let mut problems = Vec::new();
@@ -287,6 +295,61 @@ pub fn validate_skill(
         }
     }
 
+    // --- Surface paints (window `paints`) + acquisition `on_surface` ---
+    // Registry-membership lookups (editor-only BLOCKING gate: obelisk warns-and-skips an unknown
+    // surface at runtime rather than rejecting it, same author-time/runtime split as cue Effect
+    // presets) PLUS a mirror of obelisk `validate_timeline`'s numeric paint rules (blocking — a
+    // violating file fails the game asset load, same rationale as the charge-tier mirror above).
+    // The paint numerics do overlap the `validate_timeline` verbatim surface below, but that stops
+    // at its FIRST error; this loop tags EVERY offending window `window:{id}` so each renders
+    // inline on its own card.
+    for w in &entry.timeline.collision_windows {
+        let Some(paints) = &w.paints else { continue };
+        let target = format!("window:{}", w.id);
+        if paints.surface.is_empty() {
+            problems.push(Problem {
+                target: target.clone(),
+                message: format!("window '{}' paints an empty surface id", w.id),
+                blocking: true,
+            });
+        } else if !surfaces.0.contains_key(&paints.surface) {
+            problems.push(Problem {
+                target: target.clone(),
+                message: format!(
+                    "window '{}' paints unknown surface '{}' (not a loaded surface type)",
+                    w.id, paints.surface
+                ),
+                blocking: true,
+            });
+        }
+        if paints.radius <= 0.0 {
+            problems.push(Problem {
+                target: target.clone(),
+                message: format!("window '{}' paints radius must be > 0", w.id),
+                blocking: true,
+            });
+        }
+        if let PaintMode::Trail { step } = paints.mode
+            && step <= 0.0
+        {
+            problems.push(Problem {
+                target: target.clone(),
+                message: format!("window '{}' paints Trail step must be > 0", w.id),
+                blocking: true,
+            });
+        }
+        if let Some(lt) = paints.lifetime
+            && lt <= 0.0
+        {
+            problems.push(Problem {
+                target,
+                message: format!("window '{}' paints lifetime override must be > 0", w.id),
+                blocking: true,
+            });
+        }
+    }
+    check_on_surface(&entry.timeline.acquisition, surfaces, &mut problems);
+
     // --- Template windows authoring non-default anchor/anchor_offset (follow-ups ticket 3) ---
     for w in &entry.timeline.collision_windows {
         if w.spawn == WindowSpawn::Template && (w.anchor != WindowAnchor::default() || w.anchor_offset != Vec3::ZERO) {
@@ -332,6 +395,36 @@ pub fn validate_skill(
     ValidationReport { problems }
 }
 
+/// Walk `acq` and its `AcqFallback::Then` chain for `GroundPoint` `on_surface` gates whose
+/// `surface` names no loaded surface type, pushing a blocking `"acquisition"`-targeted problem for
+/// each. Editor-only (obelisk resolves `on_surface` against the live `SurfaceRegistry` at cast
+/// time and paid-fizzles a miss — an unknown id simply never matches; the editor is the
+/// author-time gate). The walk mirrors `panel::behavior::draw_fallback`'s authoring reach: both
+/// the top-level acquisition and each nested fallback `GroundPoint` are editable, so both are
+/// checked.
+fn check_on_surface(acq: &Acquisition, surfaces: &SurfaceRegistry, problems: &mut Vec<Problem>) {
+    let (on_surface, fallback) = match acq {
+        Acquisition::GroundPoint { on_surface, fallback, .. } => (on_surface.as_ref(), Some(fallback)),
+        Acquisition::HitscanEntity { fallback, .. } => (None, Some(fallback)),
+        Acquisition::Aim | Acquisition::SelfPoint => (None, None),
+    };
+    if let Some(req) = on_surface
+        && !surfaces.0.contains_key(&req.surface)
+    {
+        problems.push(Problem {
+            target: "acquisition".to_string(),
+            message: format!(
+                "acquisition requires surface '{}' (on_surface), which is not a loaded surface type",
+                req.surface
+            ),
+            blocking: true,
+        });
+    }
+    if let Some(AcqFallback::Then(inner)) = fallback {
+        check_on_surface(inner, surfaces, problems);
+    }
+}
+
 /// The deepest hop count reachable from `id` by walking `trigger_skill` edges, capped at
 /// `MAX_TRIGGER_DEPTH + 1` (recursion always terminates — a true cycle just walks straight into
 /// the cap rather than looping forever, which is exactly the "blocking" outcome we want). `depth`
@@ -357,9 +450,11 @@ mod tests {
     use std::path::PathBuf;
 
     use obelisk_bevy::assets::{
-        Acquisition, CollisionShape, CollisionWindow, CueAttach, CueBinding, CueParam, Emitter,
-        HitFilter, HitMode, ParamSource, PhaseDurations, VolumeMotion, WindowPhase,
+        AcqFallback, Acquisition, CollisionShape, CollisionWindow, CueAttach, CueBinding, CueParam,
+        Emitter, HitFilter, HitMode, ParamSource, PaintMode, PaintSpec, PhaseDurations,
+        SurfaceRequirement, VolumeMotion, WindowPhase,
     };
+    use obelisk_bevy::surfaces::{SurfaceRegistry, SurfaceType};
     use stat_core::{SkillCondition, TriggerCondition};
 
     use crate::effects::EffectMarker;
@@ -425,6 +520,47 @@ mod tests {
         (EffectLibrary::default(), VfxLibrary::default())
     }
 
+    fn surface_type(id: &str) -> SurfaceType {
+        SurfaceType {
+            id: id.to_string(),
+            lifetime: 180.0,
+            merge_radius: 0.25,
+            max_patches: 64,
+            patch_radius: 0.45,
+            standing: None,
+            on_skill_contact: Vec::new(),
+            visuals: None,
+        }
+    }
+
+    /// A `SurfaceRegistry` holding exactly `ids` (empty slice = the "no surfaces loaded" case).
+    fn registry_with(ids: &[&str]) -> SurfaceRegistry {
+        let mut reg = SurfaceRegistry::default();
+        for id in ids {
+            reg.0.insert((*id).to_string(), surface_type(id));
+        }
+        reg
+    }
+
+    fn painting_window(id: &str, paints: PaintSpec) -> CollisionWindow {
+        CollisionWindow {
+            id: id.to_string(),
+            spawn: WindowSpawn::Scheduled { phase: WindowPhase::Active, offset: 0.0 },
+            anchor: WindowAnchor::Caster,
+            anchor_offset: Vec3::ZERO,
+            strikes: true,
+            active_duration: 1.0,
+            shape: CollisionShape::Sphere { radius: 0.5 },
+            motion: VolumeMotion::Static,
+            motion_direction: Default::default(),
+            hit_filter: HitFilter::Enemies,
+            hit_mode: HitMode::OncePerTarget,
+            rehit_interval: None,
+            emitter: None,
+            paints: Some(paints),
+        }
+    }
+
     // --- dangling trigger_skill ---
 
     #[test]
@@ -439,7 +575,7 @@ mod tests {
         library.skills.insert("a".to_string(), entry.clone());
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         let probs: Vec<_> = report.for_condition(0).collect();
         assert_eq!(probs.len(), 1);
         assert!(probs[0].blocking);
@@ -459,7 +595,7 @@ mod tests {
         library.skills.insert("a".to_string(), entry.clone());
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         assert!(
             report.for_condition(0).all(|p| !p.message.contains("does not exist")),
             "{:?}",
@@ -482,7 +618,7 @@ mod tests {
         library.skills.insert("a".to_string(), entry.clone());
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         let probs: Vec<_> = report.for_condition(0).collect();
         assert_eq!(probs.len(), 1);
         assert!(probs[0].blocking);
@@ -501,7 +637,7 @@ mod tests {
         library.skills.insert("a".to_string(), entry.clone());
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         assert!(report.for_condition(0).next().is_none(), "{:?}", report.problems);
     }
 
@@ -520,7 +656,7 @@ mod tests {
         library.skills.insert("a".to_string(), entry.clone());
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         let probs: Vec<_> = report.for_condition(0).collect();
         assert_eq!(probs.len(), 1);
         assert!(!probs[0].blocking);
@@ -539,7 +675,7 @@ mod tests {
         library.skills.insert("a".to_string(), entry.clone());
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         assert!(report.for_condition(0).next().is_none(), "{:?}", report.problems);
     }
 
@@ -558,7 +694,7 @@ mod tests {
         library.skills.insert("a".to_string(), entry.clone());
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         let probs: Vec<_> = report.for_condition(0).collect();
         assert!(probs.iter().any(|p| p.blocking && p.message.contains("additional = true")));
     }
@@ -576,7 +712,7 @@ mod tests {
         library.skills.insert("a".to_string(), entry.clone());
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         assert!(report.for_condition(0).all(|p| !p.message.contains("additional = true")));
     }
 
@@ -595,7 +731,7 @@ mod tests {
         library.skills.insert("a".to_string(), entry.clone());
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         let probs: Vec<_> = report.for_condition(0).collect();
         assert!(probs.iter().any(|p| p.blocking && p.message.contains("EveryNthHit")));
     }
@@ -613,7 +749,7 @@ mod tests {
         library.skills.insert("a".to_string(), entry.clone());
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         assert!(report.for_condition(0).all(|p| !p.message.contains("EveryNthHit")));
     }
 
@@ -631,7 +767,7 @@ mod tests {
         entry.timeline.cues = cues;
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         let probs: Vec<_> = report.for_cue("on_cast").collect();
         assert_eq!(probs.len(), 1);
         assert!(probs[0].blocking);
@@ -650,7 +786,7 @@ mod tests {
 
         let (mut effects, vfx) = empty_libs();
         effects.effects.insert("Muzzle".to_string(), EffectMarker::default());
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         assert!(report.for_cue("on_cast").next().is_none(), "{:?}", report.problems);
     }
 
@@ -668,7 +804,7 @@ mod tests {
 
         let (effects, mut vfx) = empty_libs();
         vfx.effects.insert("Spark".to_string(), VfxSystem::default());
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         assert!(report.for_cue("on_cast").next().is_none(), "{:?}", report.problems);
     }
 
@@ -687,7 +823,7 @@ mod tests {
 
         let (effects, vfx) = empty_libs();
         let anim = AnimationLibrary::default();
-        let report = validate_skill(&entry, &library, &effects, &vfx, Some(&anim));
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), Some(&anim));
         let probs: Vec<_> = report.for_cue("on_cast").collect();
         assert_eq!(probs.len(), 1);
         assert!(probs[0].blocking);
@@ -705,7 +841,7 @@ mod tests {
         entry.timeline.cues = cues;
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         assert!(report.for_cue("on_cast").next().is_none(), "{:?}", report.problems);
     }
 
@@ -762,7 +898,7 @@ mod tests {
         ];
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         let probs: Vec<_> = report.for_window("shard").collect();
         assert_eq!(probs.len(), 1, "{:?}", report.problems);
         assert!(!probs[0].blocking);
@@ -778,7 +914,7 @@ mod tests {
         ];
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         assert!(report.for_window("shard").next().is_none(), "{:?}", report.problems);
     }
 
@@ -807,7 +943,7 @@ mod tests {
         library.skills.insert("a".to_string(), entry.clone());
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         let probs: Vec<_> = report.problems.iter().filter(|p| p.target == "skill").collect();
         assert!(probs.iter().any(|p| p.blocking && p.message.contains("depth")), "{:?}", report.problems);
     }
@@ -825,7 +961,7 @@ mod tests {
         library.skills.insert("a".to_string(), entry.clone());
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         assert!(
             report.problems.iter().filter(|p| p.target == "skill").all(|p| !p.message.contains("depth")),
             "{:?}",
@@ -846,7 +982,7 @@ mod tests {
         entry.timeline.collision_windows = vec![window];
 
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         let probs: Vec<_> = report.for_window("bolt").collect();
         assert_eq!(probs.len(), 1);
         assert!(probs[0].blocking);
@@ -858,7 +994,7 @@ mod tests {
         let library = SkillLibrary::default();
         let entry = blank_entry("a");
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         assert!(report.problems.iter().all(|p| !p.message.contains("CastPoint")), "{:?}", report.problems);
     }
 
@@ -882,7 +1018,193 @@ mod tests {
         );
         entry.timeline.cues = cues;
         let (effects, vfx) = empty_libs();
-        let report = validate_skill(&entry, &library, &effects, &vfx, None);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &SurfaceRegistry::default(), None);
         assert!(report.for_cue("on_cast").next().is_none());
+    }
+
+    // --- Surfaces: window `paints` (unknown surface lookup + numeric mirror) ---
+
+    #[test]
+    fn paints_unknown_surface_is_blocking() {
+        let library = SkillLibrary::default();
+        let mut entry = blank_entry("a");
+        entry.timeline.collision_windows = vec![painting_window(
+            "splat",
+            PaintSpec { surface: "ghost".to_string(), radius: 0.45, mode: PaintMode::OnEnd, lifetime: None },
+        )];
+        let (effects, vfx) = empty_libs();
+        let surfaces = registry_with(&[]); // no surfaces loaded -> every id is unknown
+        let report = validate_skill(&entry, &library, &effects, &vfx, &surfaces, None);
+        // obelisk's `validate_timeline` doesn't check registry membership (it warns-and-skips at
+        // runtime), so ONLY the editor's lookup rule fires here — exactly one problem.
+        let probs: Vec<_> = report.for_window("splat").collect();
+        assert_eq!(probs.len(), 1, "{:?}", report.problems);
+        assert!(probs[0].blocking);
+        assert!(probs[0].message.contains("ghost"));
+    }
+
+    #[test]
+    fn paints_known_surface_valid_numerics_is_clean() {
+        let library = SkillLibrary::default();
+        let mut entry = blank_entry("a");
+        entry.timeline.collision_windows = vec![painting_window(
+            "splat",
+            PaintSpec {
+                surface: "frost".to_string(),
+                radius: 0.45,
+                mode: PaintMode::Trail { step: 0.8 },
+                lifetime: Some(5.0),
+            },
+        )];
+        let (effects, vfx) = empty_libs();
+        let surfaces = registry_with(&["frost"]);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &surfaces, None);
+        assert!(report.for_window("splat").next().is_none(), "{:?}", report.problems);
+    }
+
+    #[test]
+    fn paints_empty_surface_id_is_blocking() {
+        let library = SkillLibrary::default();
+        let mut entry = blank_entry("a");
+        entry.timeline.collision_windows = vec![painting_window(
+            "splat",
+            PaintSpec { surface: String::new(), radius: 0.45, mode: PaintMode::OnEnd, lifetime: None },
+        )];
+        let (effects, vfx) = empty_libs();
+        let surfaces = registry_with(&[]);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &surfaces, None);
+        assert!(
+            report.for_window("splat").any(|p| p.blocking && p.message.contains("empty surface")),
+            "{:?}",
+            report.problems
+        );
+    }
+
+    #[test]
+    fn paints_radius_zero_is_blocking() {
+        let library = SkillLibrary::default();
+        let mut entry = blank_entry("a");
+        entry.timeline.collision_windows = vec![painting_window(
+            "splat",
+            PaintSpec { surface: "frost".to_string(), radius: 0.0, mode: PaintMode::OnEnd, lifetime: None },
+        )];
+        let (effects, vfx) = empty_libs();
+        let surfaces = registry_with(&["frost"]);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &surfaces, None);
+        assert!(
+            report.for_window("splat").any(|p| p.blocking && p.message.contains("radius")),
+            "{:?}",
+            report.problems
+        );
+    }
+
+    #[test]
+    fn paints_trail_step_zero_is_blocking() {
+        let library = SkillLibrary::default();
+        let mut entry = blank_entry("a");
+        entry.timeline.collision_windows = vec![painting_window(
+            "splat",
+            PaintSpec {
+                surface: "frost".to_string(),
+                radius: 0.45,
+                mode: PaintMode::Trail { step: 0.0 },
+                lifetime: None,
+            },
+        )];
+        let (effects, vfx) = empty_libs();
+        let surfaces = registry_with(&["frost"]);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &surfaces, None);
+        assert!(
+            report.for_window("splat").any(|p| p.blocking && p.message.contains("Trail step")),
+            "{:?}",
+            report.problems
+        );
+    }
+
+    #[test]
+    fn paints_lifetime_override_zero_is_blocking() {
+        let library = SkillLibrary::default();
+        let mut entry = blank_entry("a");
+        entry.timeline.collision_windows = vec![painting_window(
+            "splat",
+            PaintSpec {
+                surface: "frost".to_string(),
+                radius: 0.45,
+                mode: PaintMode::OnEnd,
+                lifetime: Some(0.0),
+            },
+        )];
+        let (effects, vfx) = empty_libs();
+        let surfaces = registry_with(&["frost"]);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &surfaces, None);
+        assert!(
+            report.for_window("splat").any(|p| p.blocking && p.message.contains("lifetime")),
+            "{:?}",
+            report.problems
+        );
+    }
+
+    // --- Surfaces: acquisition `on_surface` (unknown surface lookup) ---
+
+    #[test]
+    fn on_surface_unknown_surface_is_blocking() {
+        let library = SkillLibrary::default();
+        let mut entry = blank_entry("a");
+        entry.timeline.acquisition = Acquisition::GroundPoint {
+            range: 20.0,
+            fallback: AcqFallback::Fizzle,
+            on_surface: Some(SurfaceRequirement { surface: "ghost".to_string(), snap: true, consume: false }),
+        };
+        let (effects, vfx) = empty_libs();
+        let surfaces = registry_with(&[]);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &surfaces, None);
+        let probs: Vec<_> = report.problems.iter().filter(|p| p.target == "acquisition").collect();
+        assert_eq!(probs.len(), 1, "{:?}", report.problems);
+        assert!(probs[0].blocking);
+        assert!(probs[0].message.contains("ghost"));
+    }
+
+    #[test]
+    fn on_surface_known_surface_is_clean() {
+        let library = SkillLibrary::default();
+        let mut entry = blank_entry("a");
+        entry.timeline.acquisition = Acquisition::GroundPoint {
+            range: 20.0,
+            fallback: AcqFallback::Fizzle,
+            on_surface: Some(SurfaceRequirement { surface: "frost".to_string(), snap: true, consume: false }),
+        };
+        let (effects, vfx) = empty_libs();
+        let surfaces = registry_with(&["frost"]);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &surfaces, None);
+        assert!(report.problems.iter().all(|p| p.target != "acquisition"), "{:?}", report.problems);
+    }
+
+    /// `on_surface` nested one level deep in a `GroundPoint` fallback chain is still checked
+    /// (the panel edits that inner arm too — see `panel::behavior::draw_fallback`).
+    #[test]
+    fn on_surface_unknown_in_fallback_chain_is_blocking() {
+        let library = SkillLibrary::default();
+        let mut entry = blank_entry("a");
+        entry.timeline.acquisition = Acquisition::HitscanEntity {
+            range: 20.0,
+            filter: HitFilter::Enemies,
+            fallback: AcqFallback::Then(Box::new(Acquisition::GroundPoint {
+                range: 20.0,
+                fallback: AcqFallback::Fizzle,
+                on_surface: Some(SurfaceRequirement {
+                    surface: "ghost".to_string(),
+                    snap: true,
+                    consume: false,
+                }),
+            })),
+        };
+        let (effects, vfx) = empty_libs();
+        let surfaces = registry_with(&["frost"]);
+        let report = validate_skill(&entry, &library, &effects, &vfx, &surfaces, None);
+        assert!(
+            report.problems.iter().any(|p| p.target == "acquisition" && p.blocking && p.message.contains("ghost")),
+            "{:?}",
+            report.problems
+        );
     }
 }

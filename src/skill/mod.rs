@@ -120,11 +120,14 @@ fn skill_validation_rule(world: &mut World) -> Vec<ValidationMessage> {
     let Some(vfx) = world.get_resource::<VfxLibrary>() else {
         return Vec::new();
     };
+    let Some(surfaces) = world.get_resource::<obelisk_bevy::surfaces::SurfaceRegistry>() else {
+        return Vec::new();
+    };
     let anim = world.get_resource::<AnimationLibrary>();
 
     let mut messages = Vec::new();
     for (id, entry) in &library.skills {
-        let report = validation::validate_skill(entry, library, effects, vfx, anim);
+        let report = validation::validate_skill(entry, library, effects, vfx, surfaces, anim);
         for problem in &report.problems {
             messages.push(ValidationMessage {
                 severity: if problem.blocking { ValidationSeverity::Error } else { ValidationSeverity::Warning },
@@ -270,10 +273,16 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
     let mut editing_entry = open_skill.as_ref().and_then(|id| library.skills.get(id).cloned());
     let effect_library = world.resource::<EffectLibrary>();
     let vfx_library = world.resource::<VfxLibrary>();
+    // The surfaces registry (Task 1) — read alongside the other content libraries for the picker
+    // sources (Behavior region's Paints + on_surface authoring) and validation. Init'd by
+    // `SkillModePlugin`, so `.resource` is safe here exactly as it is for the two libraries above.
+    let surface_registry = world.resource::<obelisk_bevy::surfaces::SurfaceRegistry>();
     let anim_library = world.get_resource::<AnimationLibrary>();
     let report = editing_entry
         .as_ref()
-        .map(|entry| validation::validate_skill(entry, library, effect_library, vfx_library, anim_library))
+        .map(|entry| {
+            validation::validate_skill(entry, library, effect_library, vfx_library, surface_registry, anim_library)
+        })
         .unwrap_or_default();
 
     // The scrub strip (Task 11): read-only snapshots of the scrub session + its event-marker log
@@ -419,7 +428,13 @@ pub(crate) fn draw_skill_panel(world: &mut World) {
                             panel::rules::draw_rules_region(ui, entry, library, &report);
 
                             ui.separator();
-                            panel::behavior::draw_behavior_region(ui, entry, &report, &mut selected_window);
+                            panel::behavior::draw_behavior_region(
+                                ui,
+                                entry,
+                                &report,
+                                surface_registry,
+                                &mut selected_window,
+                            );
 
                             ui.separator();
                             section_header(ui, "Presentation", true, |ui| {
