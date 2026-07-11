@@ -13,6 +13,8 @@
 //! - [`rig`] — the generic anim-graph plumbing (no hardcoded rig asset — see that module's doc
 //!   comment for why).
 //! - [`cosmetics`] — the cue-driven presentation layer (the grace-ladder invariant lives here).
+//! - [`surfaces`] — the painted-patch visuals (tinted `ForwardDecal` + optional looping vfx per
+//!   `SurfacePatch`), the editor counterpart of the arena's `client/surfaces.rs`.
 //! - [`vfx_bake`] — the CPU param-baking seam `cosmetics` uses for `ParamSource::Charge`.
 //! - [`scrub`] (Task 11) — the sim-backed synchronous scrub (`ScrubSim`/`drive_scrub`), the
 //!   strip's dynamic trailing extent, and the event-marker recorder. See that module's doc
@@ -24,6 +26,7 @@ pub mod rig;
 pub mod scrub;
 pub mod sockets;
 pub mod stage;
+pub mod surfaces;
 pub mod vfx_bake;
 
 pub use cosmetics::{CosmeticLifetime, PreviewCosmetic, PreviewFlight};
@@ -43,7 +46,8 @@ use bevy::prelude::*;
 /// Bundles the whole preview stage: the sim composition + registry sync
 /// ([`stage::PreviewSimPlugin`]), the stage lifecycle ([`stage::PreviewControllerPlugin`]), the
 /// rig anim-graph plumbing ([`rig::PreviewRigPlugin`]), the rig socket index, the cue-driven
-/// cosmetics ([`cosmetics::PreviewCosmeticsPlugin`]), and the sim-backed scrub
+/// cosmetics ([`cosmetics::PreviewCosmeticsPlugin`]), the painted-patch visuals
+/// ([`surfaces::PreviewSurfacesPlugin`]), and the sim-backed scrub
 /// ([`scrub::PreviewScrubPlugin`], Task 11). Registered by `SkillModePlugin` under
 /// `#[cfg(feature = "obelisk")]` — see `crate::skill::SkillModePlugin`.
 pub struct SkillPreviewPlugin;
@@ -54,6 +58,7 @@ impl Plugin for SkillPreviewPlugin {
             .add_plugins(stage::PreviewControllerPlugin)
             .add_plugins(rig::PreviewRigPlugin)
             .add_plugins(cosmetics::PreviewCosmeticsPlugin)
+            .add_plugins(surfaces::PreviewSurfacesPlugin)
             .add_plugins(scrub::PreviewScrubPlugin)
             .init_resource::<sockets::RigSockets>()
             .add_systems(Update, (sockets::index_rig_sockets, charge::drive_charge_tier_preview));

@@ -395,6 +395,30 @@ pub fn on_preview_cue(
     }
 }
 
+/// The `bevy_vfx` [`VfxLibrary`] spawn TIER, resolved to a ready-to-insert component: clone the
+/// preset named `name`, bake each `ParamSource::Charge` param into it
+/// ([`super::vfx_bake::apply_modulated_param`]), and return the [`bevy_vfx::VfxSystem`] — or `None`
+/// when the library has no such preset (the caller warns / no-ops). The single point that turns a
+/// library name into a live vfx component, shared by cue cosmetics ([`spawn_cue_effect`] — which
+/// wraps it in a `PreviewCosmetic` + two-phase [`CosmeticLifetime`] drain) and the preview surface
+/// visuals ([`super::surfaces::attach_patch_visuals`] — which parents it under the patch with NO
+/// lifetime, so it loops for the patch's life and dies with the parent). Surfaces author no
+/// `CueParam`s, so they pass `&[]`/`0.0`. Mirrors obelisk-arena's `client/cosmetics::resolve_vfx_effect`.
+pub(crate) fn resolve_vfx_effect(
+    vfx: &VfxLibrary,
+    name: &str,
+    params: &[CueParam],
+    charge: f32,
+) -> Option<bevy_vfx::VfxSystem> {
+    let mut system = vfx.effects.get(name).cloned()?;
+    for p in params {
+        match p.source {
+            ParamSource::Charge => super::vfx_bake::apply_modulated_param(&mut system, &p.param, charge),
+        }
+    }
+    Some(system)
+}
+
 /// Spawn one cue cosmetic at `translation` (always a world-space root — see the module doc
 /// comment and `on_preview_cue`'s own comment on why v2 cosmetics are never socket-parented):
 /// **cue effect-name resolution order** (canonical — the game client must mirror it) tries
@@ -433,12 +457,7 @@ fn spawn_cue_effect(
                 ..default()
             },
         ));
-    } else if let Some(mut system) = vfx.effects.get(name).cloned() {
-        for p in params {
-            match p.source {
-                ParamSource::Charge => super::vfx_bake::apply_modulated_param(&mut system, &p.param, charge),
-            }
-        }
+    } else if let Some(system) = resolve_vfx_effect(vfx, name, params, charge) {
         base.insert(system);
     } else if warned.insert(name.to_string()) {
         warn!(

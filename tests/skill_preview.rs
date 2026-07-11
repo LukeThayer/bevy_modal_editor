@@ -23,7 +23,9 @@ use obelisk_bevy::assets::{
     WindowSpawn,
 };
 use obelisk_bevy::core::spawn_rng::SpawnRng;
-use obelisk_bevy::surfaces::{StandingState, SurfacePatch, SurfaceRegistry, SurfaceSeq, SurfaceType};
+use obelisk_bevy::surfaces::{
+    StandingState, SurfacePatch, SurfaceRegistry, SurfaceSeq, SurfaceType, SurfaceVisuals,
+};
 use obelisk_bevy::testkit::{EventRecorder, EventRecorderPlugin};
 use stat_core::{BaseDamage, DamageConfig, Delivery, Skill, SkillCondition};
 
@@ -38,6 +40,7 @@ use bevy_modal_editor::skill::preview::{
     rig::PreviewRigPlugin,
     cosmetics::{PreviewCosmetic, PreviewCosmeticsPlugin},
     sockets::{index_rig_sockets, RigSockets},
+    surfaces::{attach_patch_visuals, SurfacePatchVisual},
 };
 use bevy_modal_editor::skill::templates::SkillArchetype;
 
@@ -1046,5 +1049,122 @@ fn stage_reset_rezeroes_surface_and_spawn_streams() {
     assert_eq!(
         got, want,
         "reset reseeds SpawnRng to seed_combat_rng(0)'s derived 0x5EED_5EED stream (game parity)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Surfaces (Task 3): every live patch renders a tinted decal — the preview attaches a
+// `SurfacePatchVisual`-marked child (carrying a `ForwardDecal` in the real windowed editor) to
+// each painted patch, plus an optional looping vfx child when the surface authors one.
+// ---------------------------------------------------------------------------
+
+/// SHIPPED ASSERTION: the `SurfacePatchVisual` marker child, NOT `ForwardDecal`. `ForwardDecal`'s
+/// on-add hook reads the private `ForwardDecalMesh` resource that only `PbrPlugin`'s
+/// `ForwardDecalPlugin` inserts; this `MinimalPlugins` harness has neither it nor the
+/// `Assets<ForwardDecalMaterial<StandardMaterial>>` store, so `attach_patch_visuals` render-infra-
+/// gates the decal component (it would panic here) and only the render-independent
+/// `SurfacePatchVisual` marker child ships headlessly. The system is registered DIRECTLY here (not
+/// via `PreviewSurfacesPlugin`, whose guarded `MaterialPlugin` add WOULD create the material store
+/// and re-arm the panic path) — see `skill::preview::surfaces` for the full rationale.
+#[test]
+fn patches_get_decal_visual_children() {
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    insert_surface(&mut app, frost_surface());
+    let (rules, timeline) = frost_trail_skill();
+    insert_skill(&mut app, "frost_trail", rules, timeline);
+    open_skill(&mut app, "frost_trail");
+    app.add_systems(Update, attach_patch_visuals.run_if(in_state(EditorMode::Skill)));
+    app.update();
+    app.update();
+
+    play(&mut app, 60);
+
+    let patches = surface_patch_count(&mut app);
+    assert!(
+        patches > 0,
+        "the frost trail should have painted patches to carry visuals, got {patches}"
+    );
+
+    // Every painted patch spawns exactly one `SurfacePatchVisual` decal child…
+    let visuals: Vec<Entity> = app
+        .world_mut()
+        .query_filtered::<Entity, With<SurfacePatchVisual>>()
+        .iter(app.world())
+        .collect();
+    assert_eq!(
+        visuals.len(),
+        patches,
+        "each painted patch should spawn exactly one SurfacePatchVisual decal child \
+         (got {} visuals for {} patches)",
+        visuals.len(),
+        patches
+    );
+    // …and each is a CHILD of the patch it decorates.
+    for v in visuals {
+        let parent = app
+            .world()
+            .get::<ChildOf>(v)
+            .expect("a SurfacePatchVisual must be a child of its patch")
+            .parent();
+        assert!(
+            app.world().get::<SurfacePatch>(parent).is_some(),
+            "a SurfacePatchVisual's parent must be the SurfacePatch it decorates"
+        );
+    }
+}
+
+/// The optional looping vfx child: a surface whose `[visuals].vfx` names a registered `VfxLibrary`
+/// preset gets a second child carrying a live `VfxSystem` (resolved through cosmetics' shared
+/// `resolve_vfx_effect`, parented with NO lifetime — it loops for the patch's life and dies with
+/// it). `VfxSystem` is headless-constructible (the cue-cosmetics tests spawn it the same way), so
+/// this path is asserted directly on the `MinimalPlugins` harness.
+#[test]
+fn authored_surface_vfx_spawns_a_looping_vfx_child() {
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    app.world_mut()
+        .resource_mut::<VfxLibrary>()
+        .effects
+        .insert("Frost Embers".to_string(), bevy_vfx::VfxSystem::default());
+    let mut st = frost_surface();
+    st.visuals = Some(SurfaceVisuals {
+        decal: Some("textures/decal_splat.png".to_string()),
+        color: Some([0.3, 0.6, 1.0, 0.7]),
+        vfx: Some("Frost Embers".to_string()),
+    });
+    insert_surface(&mut app, st);
+    let (rules, timeline) = frost_trail_skill();
+    insert_skill(&mut app, "frost_trail", rules, timeline);
+    open_skill(&mut app, "frost_trail");
+    app.add_systems(Update, attach_patch_visuals.run_if(in_state(EditorMode::Skill)));
+    app.update();
+    app.update();
+
+    play(&mut app, 60);
+
+    let patches = surface_patch_count(&mut app);
+    assert!(patches > 0, "the frost trail should have painted patches, got {patches}");
+
+    // Count VfxSystem entities parented to a SurfacePatch (the surface's looping vfx child) —
+    // filtering by parent so a future cue-authored cosmetic VfxSystem can never confuse this.
+    let vfx_entities: Vec<Entity> = app
+        .world_mut()
+        .query_filtered::<Entity, With<bevy_vfx::VfxSystem>>()
+        .iter(app.world())
+        .collect();
+    let surface_vfx = vfx_entities
+        .iter()
+        .filter(|&&fx| {
+            app.world()
+                .get::<ChildOf>(fx)
+                .is_some_and(|c| app.world().get::<SurfacePatch>(c.parent()).is_some())
+        })
+        .count();
+    assert!(
+        surface_vfx > 0,
+        "an authored surface [visuals].vfx should spawn a looping VfxSystem child parented to a \
+         patch (found {surface_vfx} of {} VfxSystem entities under {patches} patches)",
+        vfx_entities.len()
     );
 }
