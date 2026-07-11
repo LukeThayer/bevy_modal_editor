@@ -285,6 +285,7 @@ pub fn scan_and_merge_root(
     skill_library: &mut SkillLibrary,
     effect_library: &mut EffectLibrary,
     vfx_library: &mut VfxLibrary,
+    surface_registry: &mut obelisk_bevy::surfaces::SurfaceRegistry,
 ) {
     let scanned = scan_content_root(root);
     skill_library.skills.extend(scanned);
@@ -302,6 +303,24 @@ pub fn scan_and_merge_root(
     // order — its `init_vfx_library`).
     crate::vfx::load_vfx_presets_from_dir(vfx_library, &root.join("assets").join("skills"));
     crate::vfx::load_vfx_presets_from_dir(vfx_library, &root.join("assets").join("vfx"));
+
+    // Surfaces (ground effects): load `config/surfaces/*.toml` into the shared registry.
+    // Skill-ref validation is deliberately skipped here (pass `None`) — the editor's own
+    // `ValidationRegistry` is the user-facing surface for dangling refs, the same warn-don't-block
+    // split as the `trigger_skill` handling in `scan_content_root` above. Later roots win on id
+    // collision: `SurfaceRegistry.0` is a `HashMap`, and `extend` overwrites an existing id with
+    // the later root's entry.
+    //
+    // `load_surfaces_dir` returns `Err` on a MISSING directory (its `read_dir` fails), so guard
+    // with `is_dir()` first — content roots that author no surfaces stay warning-free, while a
+    // genuine parse/validation failure in an existing dir still surfaces as a warning.
+    let surfaces_dir = root.join("config").join("surfaces");
+    if surfaces_dir.is_dir() {
+        match obelisk_bevy::surfaces::load_surfaces_dir(&surfaces_dir, None) {
+            Ok(map) => surface_registry.0.extend(map),
+            Err(e) => warn!("Failed to load surfaces from {:?}: {e}", surfaces_dir),
+        }
+    }
 }
 
 /// `Startup` system: ensures the starter Effect presets exist (fresh-install safety —
@@ -312,10 +331,17 @@ pub(super) fn scan_registered_content_roots(
     mut skill_library: ResMut<SkillLibrary>,
     mut effect_library: ResMut<EffectLibrary>,
     mut vfx_library: ResMut<VfxLibrary>,
+    mut surface_registry: ResMut<obelisk_bevy::surfaces::SurfaceRegistry>,
 ) {
     ensure_starter_effects(&mut effect_library);
     for root in &pending.0 {
-        scan_and_merge_root(root, &mut skill_library, &mut effect_library, &mut vfx_library);
+        scan_and_merge_root(
+            root,
+            &mut skill_library,
+            &mut effect_library,
+            &mut vfx_library,
+            &mut surface_registry,
+        );
     }
 }
 
@@ -708,6 +734,30 @@ mod tests {
             "a dangling trigger_skill reference must warn, not silently drop the skill"
         );
     }
+
+    /// (Surfaces) `scan_and_merge_root` loads `config/surfaces/*.toml` into the shared
+    /// `SurfaceRegistry` — the merge-across-roots contract Tasks 2-5 rely on (each root's
+    /// `extend` overwrites on id collision, so later roots win).
+    #[test]
+    fn scan_loads_surface_types_into_the_registry() {
+        let root = TempRoot::new("surf_scan");
+        let surfaces_dir = root.path().join("config").join("surfaces");
+        std::fs::create_dir_all(&surfaces_dir).unwrap();
+        std::fs::write(
+            surfaces_dir.join("frost.toml"),
+            "id = \"frost\"\nlifetime = 180.0\n",
+        )
+        .unwrap();
+
+        let mut skills = SkillLibrary::default();
+        let mut effects = EffectLibrary::default();
+        let mut vfx = VfxLibrary::default();
+        let mut surfaces = obelisk_bevy::surfaces::SurfaceRegistry::default();
+        scan_and_merge_root(root.path(), &mut skills, &mut effects, &mut vfx, &mut surfaces);
+
+        assert!(surfaces.0.contains_key("frost"));
+        assert_eq!(surfaces.0["frost"].lifetime, 180.0);
+    }
 }
 
 #[cfg(test)]
@@ -735,7 +785,8 @@ mod skills_dir_vfx_tests {
         let mut skills = SkillLibrary::default();
         let mut effects = EffectLibrary::default();
         let mut vfx = VfxLibrary::default();
-        scan_and_merge_root(root.path(), &mut skills, &mut effects, &mut vfx);
+        let mut surfaces = obelisk_bevy::surfaces::SurfaceRegistry::default();
+        scan_and_merge_root(root.path(), &mut skills, &mut effects, &mut vfx, &mut surfaces);
 
         assert!(
             vfx.effects.contains_key("frosty"),

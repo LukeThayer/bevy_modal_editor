@@ -523,6 +523,7 @@ mod tests {
             hit_mode: HitMode::FirstOnly,
             rehit_interval: None,
             emitter: None,
+            paints: None,
         };
         let tl = CastTimeline {
             skill_id: "s".into(),

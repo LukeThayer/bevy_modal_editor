@@ -88,6 +88,7 @@ impl WindowArchetype {
                 hit_mode: HitMode::OncePerTarget,
                 rehit_interval: None,
                 emitter: None,
+                paints: None,
             },
             Self::Projectile => CollisionWindow {
                 id,
@@ -103,6 +104,7 @@ impl WindowArchetype {
                 hit_mode: HitMode::FirstOnly,
                 rehit_interval: None,
                 emitter: None,
+                paints: None,
             },
             Self::Zone => CollisionWindow {
                 id,
@@ -118,6 +120,7 @@ impl WindowArchetype {
                 hit_mode: HitMode::EveryTick,
                 rehit_interval: Some(0.5),
                 emitter: None,
+                paints: None,
             },
             Self::Beam => CollisionWindow {
                 id,
@@ -133,6 +136,7 @@ impl WindowArchetype {
                 hit_mode: HitMode::FirstOnly,
                 rehit_interval: None,
                 emitter: None,
+                paints: None,
             },
         }
     }

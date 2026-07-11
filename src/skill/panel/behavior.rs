@@ -210,7 +210,7 @@ const ACQUISITION_CATALOG: &[AcquisitionCatalogEntry] = &[
     },
     AcquisitionCatalogEntry {
         label: "Ground point",
-        make: || Acquisition::GroundPoint { range: 20.0, fallback: AcqFallback::Fizzle },
+        make: || Acquisition::GroundPoint { range: 20.0, fallback: AcqFallback::Fizzle, on_surface: None },
     },
 ];
 

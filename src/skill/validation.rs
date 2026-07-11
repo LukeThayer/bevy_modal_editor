@@ -409,6 +409,7 @@ mod tests {
             hit_mode: HitMode::OncePerTarget,
             rehit_interval: None,
             emitter: None,
+            paints: None,
         });
         tl
     }
@@ -725,6 +726,7 @@ mod tests {
             hit_mode: HitMode::OncePerTarget,
             rehit_interval: None,
             emitter: None,
+            paints: None,
         }
     }
 
@@ -743,6 +745,7 @@ mod tests {
             hit_mode: HitMode::OncePerTarget,
             rehit_interval: None,
             emitter: Some(Emitter { window: template_target.to_string(), rate: 5.0, jitter: 0.5 }),
+            paints: None,
         }
     }
 

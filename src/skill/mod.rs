@@ -81,6 +81,11 @@ impl Plugin for SkillModePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SkillLibrary>()
             .init_resource::<PendingContentRoots>()
+            // The surfaces content registry, populated by `scan_registered_content_roots` from
+            // every root's `config/surfaces/`. Init'd here (not only by obelisk's own
+            // `ObeliskSurfacesPlugin`) so the editor carries it even when the full sim plugin
+            // isn't added; `init_resource` is idempotent, so a later plugin re-init is harmless.
+            .init_resource::<obelisk_bevy::surfaces::SurfaceRegistry>()
             .init_resource::<SkillPanelScrollHint>()
             .init_resource::<SkillSaveState>()
             .init_resource::<ChipSwitchPrompt>()
@@ -841,10 +846,12 @@ fn skill_probe(
                     hit_mode: HitMode::FirstOnly,
                     rehit_interval: None,
                     emitter: None,
+                    paints: None,
                 }],
                 acquisition: Acquisition::GroundPoint {
                     range: 20.0,
                     fallback: AcqFallback::Then(Box::new(Acquisition::SelfPoint)),
+                    on_surface: None,
                 },
                 vfx_cues: Default::default(),
                 chain_radius: 6.0,
@@ -893,6 +900,7 @@ fn skill_probe(
                     hit_mode: HitMode::OncePerTarget,
                     rehit_interval: None,
                     emitter: None,
+                    paints: None,
                 }],
                 acquisition: Acquisition::default(),
                 vfx_cues: Default::default(),

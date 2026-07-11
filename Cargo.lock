@@ -2200,7 +2200,7 @@ dependencies = [
  "bitflags 2.10.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.11.0",
  "proc-macro2",
  "quote",
  "regex",
@@ -5093,7 +5093,7 @@ dependencies = [
 [[package]]
 name = "obelisk-bevy"
 version = "0.1.0"
-source = "git+https://github.com/LukeThayer/bevy-obelisk?branch=main#79882ce266ceb10e3a58b60db27c2013446834d0"
+source = "git+https://github.com/LukeThayer/bevy-obelisk?branch=main#cd860e2aa29563a44e54d29dfc09f6ba3657d331"
 dependencies = [
  "avian3d",
  "bevy",
@@ -5106,6 +5106,7 @@ dependencies = [
  "stat_core",
  "tables_core",
  "thiserror 1.0.69",
+ "toml",
 ]
 
 [[package]]

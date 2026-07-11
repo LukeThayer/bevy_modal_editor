@@ -530,6 +530,7 @@ mod tests {
             hit_mode: HitMode::OncePerTarget,
             rehit_interval: None,
             emitter: None,
+            paints: None,
         }
     }
 
@@ -560,7 +561,7 @@ mod tests {
     #[test]
     fn cast_point_with_ground_point_in_range_resolves_to_the_ground_marker() {
         let win = window(WindowAnchor::CastPoint, Vec3::new(0.0, 3.0, 0.0));
-        let tl = timeline_with(Acquisition::GroundPoint { range: 20.0, fallback: AcqFallback::Fizzle });
+        let tl = timeline_with(Acquisition::GroundPoint { range: 20.0, fallback: AcqFallback::Fizzle, on_surface: None });
 
         let pos = resolve_window_stage_position(&win, &tl, CASTER, Some(DUMMY));
 
@@ -574,6 +575,7 @@ mod tests {
         let tl = timeline_with(Acquisition::GroundPoint {
             range: 1.0, // far short of the ~8-unit stage duel gap
             fallback: AcqFallback::Then(Box::new(Acquisition::SelfPoint)),
+            on_surface: None,
         });
 
         let pos = resolve_window_stage_position(&win, &tl, CASTER, Some(DUMMY));

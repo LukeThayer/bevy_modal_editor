@@ -285,6 +285,7 @@ mod tests {
             hit_mode: HitMode::OncePerTarget,
             rehit_interval: None,
             emitter: None,
+            paints: None,
         });
 
         let strikes = strike_breakdown(&rules, &timeline, |_| false);

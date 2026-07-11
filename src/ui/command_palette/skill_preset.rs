@@ -182,15 +182,23 @@ fn draw_skill_preset_palette(
                         let roots = world.resource::<SkillLibrary>().roots.clone();
                         world.resource_scope(|world, mut skill_library: Mut<SkillLibrary>| {
                             world.resource_scope(|world, mut effect_library: Mut<EffectLibrary>| {
-                                world.resource_scope(|_world, mut vfx_library: Mut<VfxLibrary>| {
-                                    for root in &roots {
-                                        scan_and_merge_root(
-                                            root,
-                                            &mut skill_library,
-                                            &mut effect_library,
-                                            &mut vfx_library,
-                                        );
-                                    }
+                                world.resource_scope(|world, mut vfx_library: Mut<VfxLibrary>| {
+                                    world.resource_scope(
+                                        |_world,
+                                         mut surface_registry: Mut<
+                                            obelisk_bevy::surfaces::SurfaceRegistry,
+                                        >| {
+                                            for root in &roots {
+                                                scan_and_merge_root(
+                                                    root,
+                                                    &mut skill_library,
+                                                    &mut effect_library,
+                                                    &mut vfx_library,
+                                                    &mut surface_registry,
+                                                );
+                                            }
+                                        },
+                                    );
                                 });
                             });
                         });

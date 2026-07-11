@@ -784,7 +784,7 @@ pub(crate) fn resolve_stage_acquisition(acq: &Acquisition, tl: &CastTimeline, ct
                 None => resolve_stage_fallback(fallback, tl, ctx),
             }
         }
-        Acquisition::GroundPoint { range, fallback } => {
+        Acquisition::GroundPoint { range, fallback, .. } => {
             let marker = ground_marker();
             if marker.distance(ctx.caster_pos) <= *range {
                 Some(StageAim::Point(marker))
