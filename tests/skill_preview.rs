@@ -1206,6 +1206,64 @@ fn authored_surface_vfx_spawns_a_looping_vfx_child() {
     );
 }
 
+/// An elevated paint (glacier trails ride at hitbox height ≈0.35) must still render its decal
+/// FLUSH on the stage floor: bevy 0.18 `ForwardDecal` is a flat +Y quad — an elevated quad floats,
+/// parallax-smears with view angle, and overlays characters instead of projecting onto the ground.
+/// The fix ground-snaps the render child (raycast to the `PreviewStageFloor`, top face at world
+/// Y = 0, + a 1 cm bias); the SIM patch keeps its authored Y. This asserts the child's world Y
+/// lands on the floor, not at the patch's elevation.
+#[test]
+fn elevated_patch_decal_snaps_to_stage_floor() {
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    insert_surface(&mut app, frost_surface());
+    app.add_systems(Update, attach_patch_visuals.run_if(in_state(EditorMode::Skill)));
+    // Settle the stage so the floor collider is in avian's spatial pipeline before the ground cast.
+    app.update();
+    app.update();
+
+    // Any stage entity can own the paint (obelisk reads its faction) — use the caster.
+    let caster = app
+        .world_mut()
+        .query_filtered::<Entity, With<PreviewCaster>>()
+        .iter(app.world())
+        .next()
+        .expect("the stage caster exists");
+
+    // Paint at hitbox height — the exact float-and-smear the fix targets. XZ is on the floor.
+    app.world_mut().trigger(PaintSurface {
+        surface: "frost".to_string(),
+        position: Vec3::new(0.0, 0.35, 2.0),
+        owner: caster,
+    });
+
+    // Advance until the decal child exists (attach fires on `Added<SurfacePatch>`); keep stepping
+    // so avian's FixedUpdate transform propagation fills the child's `GlobalTransform`.
+    let mut decal = None;
+    for _ in 0..30 {
+        app.update();
+        if decal.is_none() {
+            decal = app
+                .world_mut()
+                .query_filtered::<Entity, With<SurfacePatchVisual>>()
+                .iter(app.world())
+                .next();
+        }
+    }
+    let decal = decal.expect("the elevated patch must spawn a SurfacePatchVisual decal child");
+    let decal_y = app
+        .world()
+        .get::<GlobalTransform>(decal)
+        .expect("the decal child has a GlobalTransform")
+        .translation()
+        .y;
+
+    assert!(
+        (decal_y - 0.01).abs() < 0.05,
+        "decal must sit flush on the floor (top face y=0, +0.01 bias), got y={decal_y}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Surfaces (Task 5, the flagship): the stage paint tool. `StagedPaints` is session state the
 // designer pre-paints via the palette; every `reset_stage` (Play, editor Reset, scrub restart)

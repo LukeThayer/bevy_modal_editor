@@ -21,12 +21,14 @@
 //! and the `ForwardDecal` + material are attached to it only where the material store exists (the
 //! real windowed editor). See the module's own headless test for which assertion ships.
 
+use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
 use bevy::pbr::decal::{ForwardDecal, ForwardDecalMaterial, ForwardDecalMaterialExt};
 use bevy::prelude::*;
 
 use bevy_vfx::VfxLibrary;
 use obelisk_bevy::surfaces::{SurfacePatch, SurfaceRegistry};
 
+use super::stage::PreviewStageFloor;
 use crate::editor::EditorMode;
 
 /// Marks a spawned preview surface-patch visual CHILD (the decal carrier). Queried by tests to
@@ -99,6 +101,9 @@ pub fn attach_patch_visuals(
         std::collections::HashMap<String, Handle<ForwardDecalMaterial<StandardMaterial>>>,
     >,
     vfx: Option<Res<VfxLibrary>>,
+    // Ground-snap the decals (see the attach block): a downward ray onto the STATIC stage floor.
+    spatial: SpatialQuery,
+    floor_query: Query<(), With<PreviewStageFloor>>,
     mut commands: Commands,
 ) {
     for (e, patch, transform) in &q {
@@ -112,11 +117,31 @@ pub fn attach_patch_visuals(
         // inherit visibility (mirrors the arena's own patch-parent `Visibility` insert).
         commands.entity(e).insert(Visibility::default());
 
-        // Elevated patches (torso-hit scorch, air fuse) must still project to the floor: the decal
-        // box spans ±half the Y scale around the patch, so grow it to cover |y| + margin. The sim
-        // patch carries its own `Transform` (unlike the arena's `Position`-mirrored copy), so read
-        // the elevation straight off it.
-        let y_span = (transform.translation.y.abs() * 2.0 + 1.0).max(1.0);
+        // Ground-snap the decal (+ vfx) to the floor. bevy 0.18 `ForwardDecal` is a FLAT +Y quad:
+        // scale.y is INERT (there is no Y extent to grow — the old `y_span` scale did nothing),
+        // depth_compare is `Always` (never occluded), and `depth_fade_factor` bounds the projection
+        // (1.0 => ~1 m). An ELEVATED quad therefore floats, parallax-smears at grazing view angles,
+        // and draws OVER characters standing in it. So snap the VISUAL flush to the ground — then
+        // only sub-1m receivers (the floor, feet) catch it. The SIM patch keeps its authored Y
+        // (gameplay is `SURFACE_Y_TOLERANCE`-based); this offset lives on the render child alone.
+        let patch_pos = transform.translation;
+        let origin = patch_pos + Vec3::Y * 2.0;
+        let ground_y = spatial
+            .cast_ray_predicate(
+                origin,
+                Dir3::NEG_Y,
+                50.0,
+                true,
+                &SpatialQueryFilter::default(),
+                // STATIC stage floor ONLY — never a combatant capsule the patch happens to sit
+                // under (predicate `true` = a hit to consider, `false` = skip and keep travelling).
+                &|entity| floor_query.contains(entity),
+            )
+            .map(|hit| origin.y - hit.distance)
+            // Flat-stage fallback: the floor's top face is world Y = 0 (see `spawn_arena_floor`).
+            .unwrap_or(0.0);
+        // Child-LOCAL Y that lands the child's WORLD Y on the ground + a 1 cm bias off the floor.
+        let visual_y = ground_y - patch_pos.y + 0.01;
 
         // The decal child: ALWAYS `SurfacePatchVisual`-marked (render-independent). `ForwardDecal`
         // + its material are attached only where the material store exists (the windowed editor) —
@@ -126,9 +151,11 @@ pub fn attach_patch_visuals(
             .spawn((
                 Name::new(format!("SurfaceDecal({})", patch.surface)),
                 SurfacePatchVisual,
-                // ForwardDecal's unit quad projects within its scaled box: XZ = diameter,
-                // Y = `y_span` (reaches the floor even for elevated patches — see above).
-                Transform::from_scale(Vec3::new(patch.radius * 2.0, y_span, patch.radius * 2.0)),
+                // Ground-snapped (child-local `visual_y`), XZ = diameter. scale.y is 1.0: the quad
+                // has NO Y extent to scale (see the ground-snap note above — `y_span` is gone for
+                // good; a raw scale never reached the floor, it only stretched a flat quad).
+                Transform::from_xyz(0.0, visual_y, 0.0)
+                    .with_scale(Vec3::new(patch.radius * 2.0, 1.0, patch.radius * 2.0)),
                 Visibility::default(),
             ))
             .id();
@@ -178,7 +205,9 @@ pub fn attach_patch_visuals(
                 let fx = commands
                     .spawn((
                         Name::new(format!("SurfaceVfx({})", patch.surface)),
-                        Transform::default(),
+                        // Same ground-snap as the decal so embers sit on the floor, not at the
+                        // patch's authored (elevated) Y.
+                        Transform::from_xyz(0.0, visual_y, 0.0),
                         Visibility::default(),
                         system,
                     ))
