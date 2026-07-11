@@ -1466,6 +1466,8 @@ dependencies = [
  "landmass_rerecast",
  "loot_core",
  "obelisk-bevy",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
  "ron 0.8.1",
  "serde",
  "stat_core",

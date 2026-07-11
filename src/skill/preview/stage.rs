@@ -38,6 +38,11 @@ use obelisk_bevy::prelude::{
 };
 use obelisk_bevy::spatial::filter::passes_filter;
 
+// `SeedableRng` brings `ChaCha8Rng::seed_from_u64` into scope for the surfaces `SpawnRng` reseed in
+// `PreviewStageReset::reset_stage`. rand/rand_chacha are pinned to obelisk's own versions (0.8/0.3)
+// so `rand_chacha::ChaCha8Rng` IS the exact type `SpawnRng`'s field holds (Cargo dedupes to one).
+use rand::SeedableRng;
+
 use bevy_editor_game::{GameCamera, GameResetEvent, GameStartedEvent, GameState};
 
 use crate::editor::{EditorCamera, EditorMode};
@@ -306,7 +311,7 @@ impl Plugin for PreviewSimPlugin {
 /// is authoritative over its own world (server-tier: hit resolution + `CombatRng` both run here),
 /// matching a headless server's composition.
 fn add_obelisk_sim(app: &mut App) {
-    use obelisk_bevy::{assets, combat, core, loot, net, spatial, timeline, vfx, ObeliskSet};
+    use obelisk_bevy::{assets, combat, core, loot, net, spatial, surfaces, timeline, vfx, ObeliskSet};
 
     app.add_plugins(assets::ObeliskAssetsPlugin)
         .add_plugins(core::ObeliskCorePlugin)
@@ -314,6 +319,13 @@ fn add_obelisk_sim(app: &mut App) {
         .add_plugins(net::ObeliskNetPlugin)
         .add_plugins(vfx::ObeliskCuePlugin)
         .add_plugins(loot::ObeliskLootPlugin);
+
+    // Surfaces (ground effects): paint/decay/contact/standing run in the preview sim exactly as on
+    // a server — obelisk includes this same plugin in `ObeliskSimPlugin`. Its systems live in
+    // `ObeliskSet::Advance`/`ResolveHits` (see the plugin's own registration), so the Finding-1 gate
+    // configured on those sets below (`run_if(in_state(EditorMode::Skill))`) covers them for free —
+    // no per-system gating needed, and they never tick outside Skill mode.
+    app.add_plugins(surfaces::ObeliskSurfacesPlugin);
 
     // Finding 1 (Task 10 review): gating the SETS (not just the systems this fn explicitly adds
     // below) means every system anyone assigns `.in_set(ObeliskSet::_)` — including
@@ -689,21 +701,44 @@ pub struct PreviewStageReset<'w, 's> {
     rng: ResMut<'w, CombatRng>,
     cooldowns: ResMut<'w, Cooldowns>,
     previewing: ResMut<'w, PreviewCastSkill>,
+    /// Surfaces: painted patches + the streams the surfaces sim draws from, all re-zeroed on a
+    /// reset so scrub's "same seed -> identical" holds for painted ground content too.
+    patches: Query<'w, 's, Entity, With<obelisk_bevy::surfaces::SurfacePatch>>,
+    surface_seq: ResMut<'w, obelisk_bevy::surfaces::SurfaceSeq>,
+    standing: ResMut<'w, obelisk_bevy::surfaces::StandingState>,
+    spawn_rng: ResMut<'w, obelisk_bevy::core::spawn_rng::SpawnRng>,
     /// Host rig registration (hand launch offset) — `Option` so a test harness without a
     /// registered rig previews from the caster origin, the pre-hand behavior.
     rig: Option<Res<'w, super::rig::PreviewCasterRig>>,
 }
 
 impl PreviewStageReset<'_, '_> {
-    /// Reset the stage to a clean, deterministic instant: despawn in-flight hitboxes, expire
-    /// cosmetics in place (the grace ladder despawns them — see `cosmetics.rs`), interrupt any
-    /// live cast, heal + refill everyone, reposition to home posts, reseed the combat RNG
-    /// (`CombatRng::default()`, seed 0), clear cooldowns, clear which skill is "previewing"
+    /// Reset the stage to a clean, deterministic instant: despawn in-flight hitboxes AND painted
+    /// surface patches, expire cosmetics in place (the grace ladder despawns them — see
+    /// `cosmetics.rs`), interrupt any live cast, heal + refill everyone, reposition to home posts,
+    /// reseed the combat RNG (`CombatRng::default()`, seed 0) AND the surfaces streams
+    /// (`SurfaceSeq`/`StandingState`/`SpawnRng`), clear cooldowns, clear which skill is "previewing"
     /// (`cosmetics::on_preview_cue`'s cue-binding lookup key).
     pub fn reset_stage(&mut self) {
         for e in self.hitboxes.iter() {
             self.commands.entity(e).try_despawn();
         }
+        // Surfaces: a reset returns the stage to BARE GROUND and re-zeroes every stream the surfaces
+        // sim draws from, so scrub's "same seed -> identical" holds for painted content too. SpawnRng
+        // was previously NOT reseeded here (the pre-surfaces determinism gap this task closes): a
+        // scrub restart re-ran an emitter from wherever its jitter stream happened to be left, so
+        // emitter-jitter positions differed every restart. 0x5EED_5EED mirrors `seed_combat_rng(0)`'s
+        // derived spawn seed (`seed ^ SPAWN_RNG_SEED_XOR` with seed 0), the value a real game host
+        // seeds SpawnRng to — so the preview draws the SAME jitter the game would.
+        //
+        // SEAM (Task 5): this re-zero runs BEFORE any staged re-application. When the panel gains a
+        // "pre-paint the stage" authoring step, it must re-apply its staged patches AFTER this clear.
+        for e in self.patches.iter() {
+            self.commands.entity(e).try_despawn();
+        }
+        self.surface_seq.0 = 0;
+        *self.standing = Default::default();
+        self.spawn_rng.0 = rand_chacha::ChaCha8Rng::seed_from_u64(0x5EED_5EED);
         for mut life in self.cosmetics.iter_mut() {
             life.elapsed = life.duration;
             // Reset wants the INSTANT clear (replay from t=0), not the natural drain.

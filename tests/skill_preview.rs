@@ -19,8 +19,11 @@ use bevy_vfx::VfxLibrary;
 
 use obelisk_bevy::assets::{
     AcqFallback, Acquisition, CastTimeline, CollisionShape, CollisionWindow, HitFilter, HitMode,
-    MotionDirection, PhaseDurations, VolumeMotion, WindowAnchor, WindowPhase, WindowSpawn,
+    MotionDirection, PaintMode, PaintSpec, PhaseDurations, VolumeMotion, WindowAnchor, WindowPhase,
+    WindowSpawn,
 };
+use obelisk_bevy::core::spawn_rng::SpawnRng;
+use obelisk_bevy::surfaces::{StandingState, SurfacePatch, SurfaceRegistry, SurfaceSeq, SurfaceType};
 use obelisk_bevy::testkit::{EventRecorder, EventRecorderPlugin};
 use stat_core::{BaseDamage, DamageConfig, Delivery, Skill, SkillCondition};
 
@@ -30,7 +33,7 @@ use bevy_modal_editor::skill::library::{SkillEntry, SkillLibrary};
 use bevy_modal_editor::skill::preview::{
     stage::{
         PreviewCaster, PreviewDummy, PreviewSimPlugin, PreviewControllerPlugin, PreviewStageFloor,
-        SPAWN_MARKERS,
+        PreviewStageReset, SPAWN_MARKERS,
     },
     rig::PreviewRigPlugin,
     cosmetics::{PreviewCosmetic, PreviewCosmeticsPlugin},
@@ -858,5 +861,190 @@ fn per_frame_library_writes_keep_timeline_handles_stable() {
     assert!(
         !rec.hit_window_opened.is_empty() && !rec.damage_resolved.is_empty(),
         "the in-flight cast still opens its window and lands damage under per-frame writes"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Surfaces (Task 2): the preview stage runs the obelisk surfaces sim (paint/decay/standing) and a
+// stage reset returns it to bare ground, re-zeroing every stream the sim draws from so scrub's
+// "same seed -> identical" holds for painted content too.
+// ---------------------------------------------------------------------------
+
+/// A minimal in-memory frost surface type (no disk): tiny `merge_radius` so consecutive trail
+/// splats (0.5 m apart) are NOT deduped, generous `max_patches` so nothing is evicted mid-run.
+fn frost_surface() -> SurfaceType {
+    SurfaceType {
+        id: "frost".to_string(),
+        lifetime: 180.0,
+        merge_radius: 0.1,
+        max_patches: 64,
+        patch_radius: 0.45,
+        standing: None,
+        on_skill_contact: Vec::new(),
+        visuals: None,
+    }
+}
+
+/// Overwrite the `SurfaceRegistry` with a single-type map (in-memory — no `config/surfaces` disk
+/// load). Works whether or not `ObeliskSurfacesPlugin` has inserted its empty default yet, so it
+/// is safe to call at both the RED (plugin absent) and GREEN stages.
+fn insert_surface(app: &mut App, st: SurfaceType) {
+    let mut map = std::collections::HashMap::new();
+    map.insert(st.id.clone(), st);
+    app.world_mut().insert_resource(SurfaceRegistry(map));
+}
+
+/// A projectile that paints a frost `Trail` as it flies — the `Projectile` archetype (which
+/// already aims at the dummy and spawns from the caster) with its window's motion slowed to
+/// 8 u/s and a `PaintSpec` bolted on. Painting is a window PROPERTY, so the archetype's whole
+/// cast/aim/spawn machinery is reused unchanged.
+fn frost_trail_skill() -> (Skill, CastTimeline) {
+    let (rules, mut timeline) = SkillArchetype::Projectile.build("frost_trail");
+    let w = &mut timeline.collision_windows[0];
+    w.motion = VolumeMotion::Linear { speed: 8.0 };
+    w.paints = Some(PaintSpec {
+        surface: "frost".to_string(),
+        radius: 0.45,
+        mode: PaintMode::Trail { step: 0.5 },
+        lifetime: None,
+    });
+    (rules, timeline)
+}
+
+fn surface_patch_count(app: &mut App) -> usize {
+    app.world_mut()
+        .query_filtered::<Entity, With<SurfacePatch>>()
+        .iter(app.world())
+        .count()
+}
+
+/// The sorted, quantized (mm) XZ positions of every live surface patch.
+fn surface_patch_positions(app: &mut App) -> Vec<(i64, i64, i64)> {
+    let mut v: Vec<(i64, i64, i64)> = app
+        .world_mut()
+        .query_filtered::<&Transform, With<SurfacePatch>>()
+        .iter(app.world())
+        .map(|t| {
+            (
+                (t.translation.x * 1000.0) as i64,
+                (t.translation.y * 1000.0) as i64,
+                (t.translation.z * 1000.0) as i64,
+            )
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// The painting window paints a frost trail as it flies (>= 3 patches over ~1 s), and a stage
+/// reset returns the stage to bare ground (0 patches) — the plugin is composed AND the reset
+/// despawns painted content. Without `ObeliskSurfacesPlugin` in the sim this fails with 0 patches
+/// (the trail painter never runs); without the reset's patch despawn it fails with the patches
+/// still standing.
+#[test]
+fn painting_skill_produces_patches_and_reset_clears_them() {
+    use bevy::ecs::system::RunSystemOnce;
+
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    insert_surface(&mut app, frost_surface());
+    let (rules, timeline) = frost_trail_skill();
+    insert_skill(&mut app, "frost_trail", rules, timeline);
+    open_skill(&mut app, "frost_trail");
+    app.update();
+    app.update();
+
+    play(&mut app, 60);
+    assert!(
+        surface_patch_count(&mut app) >= 3,
+        "the frost trail should have painted at least 3 patches over ~1 s of travel, got {}",
+        surface_patch_count(&mut app)
+    );
+
+    app.world_mut()
+        .run_system_once(|mut reset: PreviewStageReset| reset.reset_stage())
+        .expect("stage reset runs");
+    assert_eq!(
+        surface_patch_count(&mut app),
+        0,
+        "a stage reset must despawn every painted patch (bare ground)"
+    );
+}
+
+/// Determinism: two identical Play runs on the same stage paint the trail at IDENTICAL quantized
+/// positions. `play` funnels through `start_preview` -> `reset_stage`, so the second run's reset
+/// clears the first run's patches and re-zeroes the surface streams before re-casting. Guards
+/// against any future non-determinism (e.g. jitter) leaking into painted-patch positions.
+#[test]
+fn surface_scrub_restart_is_deterministic() {
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    insert_surface(&mut app, frost_surface());
+    let (rules, timeline) = frost_trail_skill();
+    insert_skill(&mut app, "frost_trail", rules, timeline);
+    open_skill(&mut app, "frost_trail");
+    app.update();
+    app.update();
+
+    play(&mut app, 60);
+    let first = surface_patch_positions(&mut app);
+    play(&mut app, 60);
+    let second = surface_patch_positions(&mut app);
+
+    assert!(first.len() >= 3, "the trail should paint patches to compare, got {}", first.len());
+    assert_eq!(
+        first, second,
+        "same charge + seed -> IDENTICAL painted-patch positions across a scrub restart"
+    );
+}
+
+/// The reset re-zeroes every stream the surfaces sim draws from — pinned DIRECTLY (each assertion
+/// falsifies exactly one reset). `SurfaceSeq` (the deterministic patch ordinal) returns to 0;
+/// `StandingState` (the per-victim rehit clocks + the previous-tick inside-set — a combatant
+/// stands in the trail's first splat, which is painted at the caster's own spawn) returns to
+/// default; `SpawnRng` (the emitter-jitter stream — the PRE-SURFACES determinism gap this task
+/// closes) is reseeded to `seed_combat_rng(0)`'s derived `0x5EED_5EED` stream, so a scrub restart
+/// draws identical emitter jitter every time.
+#[test]
+fn stage_reset_rezeroes_surface_and_spawn_streams() {
+    use bevy::ecs::system::RunSystemOnce;
+    use rand::{Rng, SeedableRng};
+
+    let mut app = test_app();
+    enter_skill_mode(&mut app);
+    insert_surface(&mut app, frost_surface());
+    let (rules, timeline) = frost_trail_skill();
+    insert_skill(&mut app, "frost_trail", rules, timeline);
+    open_skill(&mut app, "frost_trail");
+    app.update();
+    app.update();
+
+    play(&mut app, 60);
+
+    // Pre-reset: the streams are "dirty" from the run.
+    assert!(app.world().resource::<SurfaceSeq>().0 > 0, "paints advanced SurfaceSeq");
+    assert!(
+        !app.world().resource::<StandingState>().inside_prev.is_empty(),
+        "a combatant stands in a painted patch, so StandingState.inside_prev is populated"
+    );
+    // Nothing draws SpawnRng without an emitter, so perturb it by hand to make the reseed
+    // observable (the whole point of the fix — an emitter run would perturb it for real).
+    app.world_mut().resource_mut::<SpawnRng>().0.r#gen::<u64>();
+
+    app.world_mut()
+        .run_system_once(|mut reset: PreviewStageReset| reset.reset_stage())
+        .expect("stage reset runs");
+
+    assert_eq!(app.world().resource::<SurfaceSeq>().0, 0, "reset re-zeroes SurfaceSeq");
+    let standing = app.world().resource::<StandingState>();
+    assert!(
+        standing.inside_prev.is_empty() && standing.next_due.is_empty(),
+        "reset restores StandingState to default"
+    );
+    let got = app.world_mut().resource_mut::<SpawnRng>().0.r#gen::<u64>();
+    let want = rand_chacha::ChaCha8Rng::seed_from_u64(0x5EED_5EED).r#gen::<u64>();
+    assert_eq!(
+        got, want,
+        "reset reseeds SpawnRng to seed_combat_rng(0)'s derived 0x5EED_5EED stream (game parity)"
     );
 }

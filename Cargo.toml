@@ -99,6 +99,11 @@ toml = { version = "0.8", optional = true }
 # of an existing rules TOML in place, leaving comments/order/every other field untouched. Pinned
 # to 0.22 to match the version `toml 0.8` already resolves (see Cargo.lock) — no duplicate copy.
 toml_edit = { version = "0.22", optional = true }
+# ChaCha8Rng reseed for the preview stage's deterministic reset (`SpawnRng`, the emitter-jitter
+# stream). Same versions obelisk-bevy declares (rand 0.8 / rand_chacha 0.3) so Cargo dedupes to the
+# ONE instance whose `ChaCha8Rng` IS `SpawnRng`'s field type — a mismatched major would not unify.
+rand = { version = "0.8", optional = true }
+rand_chacha = { version = "0.3", optional = true }
 
 
 [dev-dependencies]
@@ -108,7 +113,7 @@ bevy = { workspace = true, features = ["dynamic_linking"] }
 default = []
 dynamic = ["bevy/dynamic_linking"]
 # Enables EditorMode::Skill (K key, right panel) and the obelisk-bevy integration.
-obelisk = ["dep:obelisk-bevy", "dep:stat_core", "dep:loot_core", "dep:toml", "dep:toml_edit"]
+obelisk = ["dep:obelisk-bevy", "dep:stat_core", "dep:loot_core", "dep:toml", "dep:toml_edit", "dep:rand", "dep:rand_chacha"]
 
 [[example]]
 name = "simple"
