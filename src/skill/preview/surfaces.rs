@@ -12,22 +12,34 @@
 //! despawn WITH the patch: obelisk patch despawns are plain recursive `despawn`
 //! (decay/consume/evict/reset), so neither child carries its own lifetime.
 //!
+//! The decal MATERIAL is the depth-TESTED fork ([`decal_material::DepthTestedDecalMaterial`]) — a
+//! near-verbatim clone of bevy's `ForwardDecalMaterial` minus the `depth_compare = Always` override,
+//! so the frost/scorch ground no longer draws THROUGH the preview dummy/caster standing in it (see
+//! that module's docs). The `ForwardDecal` MARKER is KEPT: its on-add hook is material-agnostic (it
+//! only sets the shared quad mesh), so it drives the forked material's mesh unchanged.
+//!
 //! HEADLESS SAFETY (why this diverges from the arena's single-bundle spawn): `ForwardDecal` needs
 //! `PbrPlugin`'s render infrastructure — the private `ForwardDecalMesh` resource its on-add hook
-//! reads (inserted by `ForwardDecalPlugin`) and the `Assets<ForwardDecalMaterial<StandardMaterial>>`
-//! store `MaterialPlugin` inserts. The editor's own `tests/skill_preview.rs` harness runs the
-//! surfaces sim on a `MinimalPlugins` app with NEITHER, so the [`SurfacePatchVisual`] marker child
-//! is spawned UNCONDITIONALLY (the render-independent proof the attach ran + the teardown handle)
-//! and the `ForwardDecal` + material are attached to it only where the material store exists (the
-//! real windowed editor). See the module's own headless test for which assertion ships.
+//! reads (inserted by `ForwardDecalPlugin`) and the `Assets<DepthTestedDecalMaterial>` store
+//! `PreviewSurfacesPlugin`'s `MaterialPlugin` inserts. The editor's own `tests/skill_preview.rs`
+//! harness runs the surfaces sim on a `MinimalPlugins` app with NEITHER, so the [`SurfacePatchVisual`]
+//! marker child is spawned UNCONDITIONALLY (the render-independent proof the attach ran + the
+//! teardown handle) and the `ForwardDecal` + material are attached to it only where the material
+//! store exists (the real windowed editor). See the module's own headless test for which assertion
+//! ships.
 
 use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
-use bevy::pbr::decal::{ForwardDecal, ForwardDecalMaterial, ForwardDecalMaterialExt};
+// `ForwardDecal` is kept for its MATERIAL-AGNOSTIC quad-mesh on-add hook (bevy_pbr 0.18.0
+// `decal/forward.rs::forward_decal_set_mesh` only sets the shared rotated-`Rectangle`
+// `ForwardDecalMesh` on the entity — it never touches the material type), so it drives the mesh for
+// our forked material unchanged. The MATERIAL itself is the depth-tested fork (`decal_material.rs`).
+use bevy::pbr::decal::ForwardDecal;
 use bevy::prelude::*;
 
 use bevy_vfx::VfxLibrary;
 use obelisk_bevy::surfaces::{SurfacePatch, SurfaceRegistry};
 
+use super::decal_material::{DepthTestedDecalExt, DepthTestedDecalMaterial};
 use super::stage::PreviewStageFloor;
 use crate::editor::EditorMode;
 
@@ -88,18 +100,16 @@ const DEFAULT_DECAL_TEXTURE: &str = "textures/decal_splat.png";
 /// Every input beyond the patch query is Option/Option-guarded so this is a clean no-op on the
 /// headless test harness: a missing `SurfaceRegistry` falls back to the neutral splat, a missing
 /// `VfxLibrary` skips the vfx child, and — the load-bearing guard — a missing
-/// `Assets<ForwardDecalMaterial<StandardMaterial>>` store spawns the bare [`SurfacePatchVisual`]
-/// marker WITHOUT the render-resource-dependent `ForwardDecal` (whose on-add hook would panic there;
-/// see the module doc comment).
+/// `Assets<DepthTestedDecalMaterial>` store spawns the bare [`SurfacePatchVisual`] marker WITHOUT
+/// the render-resource-dependent `ForwardDecal` (whose on-add hook would panic there; see the module
+/// doc comment).
 pub fn attach_patch_visuals(
     q: Query<(Entity, &SurfacePatch, &Transform), Added<SurfacePatch>>,
     registry: Option<Res<SurfaceRegistry>>,
     asset_server: Res<AssetServer>,
-    mut decal_materials: Option<ResMut<Assets<ForwardDecalMaterial<StandardMaterial>>>>,
+    mut decal_materials: Option<ResMut<Assets<DepthTestedDecalMaterial>>>,
     // Per-surface-type decal material cache (see the attach block for the static-registry caveat).
-    mut material_cache: Local<
-        std::collections::HashMap<String, Handle<ForwardDecalMaterial<StandardMaterial>>>,
-    >,
+    mut material_cache: Local<std::collections::HashMap<String, Handle<DepthTestedDecalMaterial>>>,
     vfx: Option<Res<VfxLibrary>>,
     // Ground-snap the decals (see the attach block): a downward ray onto the STATIC stage floor.
     spatial: SpatialQuery,
@@ -118,11 +128,13 @@ pub fn attach_patch_visuals(
         commands.entity(e).insert(Visibility::default());
 
         // Ground-snap the decal (+ vfx) to the floor. bevy 0.18 `ForwardDecal` is a FLAT +Y quad:
-        // scale.y is INERT (there is no Y extent to grow — the old `y_span` scale did nothing),
-        // depth_compare is `Always` (never occluded), and `depth_fade_factor` bounds the projection
-        // (1.0 => ~1 m). An ELEVATED quad therefore floats, parallax-smears at grazing view angles,
-        // and draws OVER characters standing in it. So snap the VISUAL flush to the ground — then
-        // only sub-1m receivers (the floor, feet) catch it. The SIM patch keeps its authored Y
+        // scale.y is INERT (there is no Y extent to grow — the old `y_span` scale did nothing) and
+        // `depth_fade_factor` bounds the projection (1.0 => ~1 m). The material is now the DEPTH-TESTED
+        // fork (`decal_material.rs`), so unlike stock `ForwardDecal` the quad IS occluded by nearer
+        // opaque geometry (the dummy/caster no longer show frost through them) — which makes flush
+        // ground-snapping doubly important: an ELEVATED quad would float, parallax-smear at grazing
+        // angles, AND now z-fight / vanish against the floor. Snapping the VISUAL flush to the ground
+        // keeps only sub-1m receivers (the floor, feet) catching it. The SIM patch keeps its authored Y
         // (gameplay is `SURFACE_Y_TOLERANCE`-based); this offset lives on the render child alone.
         let patch_pos = transform.translation;
         let origin = patch_pos + Vec3::Y * 2.0;
@@ -141,6 +153,9 @@ pub fn attach_patch_visuals(
             // Flat-stage fallback: the floor's top face is world Y = 0 (see `spawn_arena_floor`).
             .unwrap_or(0.0);
         // Child-LOCAL Y that lands the child's WORLD Y on the ground + a 1 cm bias off the floor.
+        // With the depth-tested fork, that +0.01 m ALSO doubles as the depth-test-winning z-offset:
+        // the decal sits just in front of the floor plane so the standard depth comparison lets it
+        // draw OVER the floor (no z-fight) while still being occluded by taller geometry above it.
         let visual_y = ground_y - patch_pos.y + 0.01;
 
         // The decal child: ALWAYS `SurfacePatchVisual`-marked (render-independent). `ForwardDecal`
@@ -169,14 +184,14 @@ pub fn attach_patch_visuals(
                 .as_deref()
                 .unwrap_or(DEFAULT_DECAL_TEXTURE)
                 .to_string();
-            // One ForwardDecal material per surface TYPE, not per patch: a surface's registry
-            // visuals are STATIC at runtime, so every patch of a given surface shares one handle.
+            // One decal material per surface TYPE, not per patch: a surface's registry visuals are
+            // STATIC at runtime, so every patch of a given surface shares one handle.
             // NOTE: a future hot-reload of the surface TOMLs would mutate a type's visuals and MUST
             // invalidate this cache (drop the changed surface's entry) — no reload path exists today.
             let material = material_cache
                 .entry(patch.surface.clone())
                 .or_insert_with(|| {
-                    materials.add(ForwardDecalMaterial {
+                    materials.add(DepthTestedDecalMaterial {
                         base: StandardMaterial {
                             base_color: color,
                             base_color_texture: Some(asset_server.load(&texture)),
@@ -184,7 +199,10 @@ pub fn attach_patch_visuals(
                             perceptual_roughness: 1.0,
                             ..default()
                         },
-                        extension: ForwardDecalMaterialExt {
+                        // The depth-tested fork: identical to bevy's `ForwardDecalMaterialExt` but
+                        // the pipeline keeps its STANDARD depth test, so nearer opaque geometry (the
+                        // preview dummy/caster) occludes the frost instead of the decal drawing over it.
+                        extension: DepthTestedDecalExt {
                             depth_fade_factor: 1.0,
                         },
                     })
@@ -218,17 +236,24 @@ pub fn attach_patch_visuals(
     }
 }
 
-/// Wires the preview surface-patch visuals: the `MaterialPlugin` for the decal material (guarded —
-/// the real editor's `PbrPlugin`/`ForwardDecalPlugin` already registered it, so this is a defensive
-/// no-op there, kept idempotent so a future `PbrPlugin` that drops the auto-registration doesn't
-/// silently break decals — same reasoning as the arena's `SurfaceVisualsPlugin`) + the attach
-/// system, scoped to `EditorMode::Skill` (patches only ever exist on the Skill-mode stage).
+/// Wires the preview surface-patch visuals: the windowed-only `MaterialPlugin` for the depth-tested
+/// decal fork ([`super::decal_material::DepthTestedDecalMaterial`]) + the attach system, scoped to
+/// `EditorMode::Skill` (patches only ever exist on the Skill-mode stage).
+///
+/// This plugin is the editor's WINDOWED-ONLY composition point for preview decals — it is added only
+/// via `SkillPreviewPlugin` (the real editor); the headless `tests/skill_preview.rs` harness adds
+/// `attach_patch_visuals` DIRECTLY and never adds this plugin, so it never registers the
+/// `DepthTestedDecalMaterial` store and the decal stays a clean no-op there (mirroring the arena's
+/// `app_windowed.rs`-only `MaterialPlugin` registration). Unlike the old stock `ForwardDecalMaterial`
+/// add, this registration is LOAD-BEARING: `PbrPlugin`/`ForwardDecalPlugin` supply the `ForwardDecal`
+/// quad-mesh hook + the `bevy_pbr::decal::forward` shader library the fork reuses, but NOT this custom
+/// material type — so the guard here is pure idempotency, not a defensive no-op.
 pub struct PreviewSurfacesPlugin;
 
 impl Plugin for PreviewSurfacesPlugin {
     fn build(&self, app: &mut App) {
-        if !app.is_plugin_added::<MaterialPlugin<ForwardDecalMaterial<StandardMaterial>>>() {
-            app.add_plugins(MaterialPlugin::<ForwardDecalMaterial<StandardMaterial>>::default());
+        if !app.is_plugin_added::<MaterialPlugin<DepthTestedDecalMaterial>>() {
+            app.add_plugins(MaterialPlugin::<DepthTestedDecalMaterial>::default());
         }
         app.add_systems(Update, attach_patch_visuals.run_if(in_state(EditorMode::Skill)));
     }

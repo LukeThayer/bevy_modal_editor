@@ -1098,7 +1098,7 @@ fn stage_reset_rezeroes_surface_and_spawn_streams() {
 /// SHIPPED ASSERTION: the `SurfacePatchVisual` marker child, NOT `ForwardDecal`. `ForwardDecal`'s
 /// on-add hook reads the private `ForwardDecalMesh` resource that only `PbrPlugin`'s
 /// `ForwardDecalPlugin` inserts; this `MinimalPlugins` harness has neither it nor the
-/// `Assets<ForwardDecalMaterial<StandardMaterial>>` store, so `attach_patch_visuals` render-infra-
+/// `Assets<DepthTestedDecalMaterial>` store, so `attach_patch_visuals` render-infra-
 /// gates the decal component (it would panic here) and only the render-independent
 /// `SurfacePatchVisual` marker child ships headlessly. The system is registered DIRECTLY here (not
 /// via `PreviewSurfacesPlugin`, whose guarded `MaterialPlugin` add WOULD create the material store

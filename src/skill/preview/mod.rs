@@ -22,6 +22,7 @@
 
 pub mod charge;
 pub mod cosmetics;
+pub mod decal_material;
 pub mod rig;
 pub mod scrub;
 pub mod sockets;
